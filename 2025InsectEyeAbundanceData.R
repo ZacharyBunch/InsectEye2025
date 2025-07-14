@@ -261,48 +261,61 @@ ggplot(plot_orders, aes(x = ymd(date), y = total_abundance, color = site, shape 
   )
 
 
-### Corn Adjacent Only Graphs ####
-corn_sites_data <- combined_all_sites %>%
+#### Corn Only By Day ####
+
+
+# Summarize total abundance by date and site
+daily_corn_total <- combined_all_sites %>%
   filter(site %in% c("Harner C", "Rock Springs A")) %>%
-  mutate(total_abundance = Diptera + Hymenoptera + Lepidoptera + Coleoptera)
+  mutate(
+    date = as.Date(datetime),
+    total_abundance = Diptera + Hymenoptera + Lepidoptera + Coleoptera
+  ) %>%
+  group_by(site, date) %>%
+  summarise(total_abundance = sum(total_abundance, na.rm = TRUE), .groups = "drop")
 
-#total Abundance
-
-ggplot(corn_sites_data, aes(x = datetime, y = total_abundance, color = site)) +
-  geom_line(stat = "summary", fun = sum, size = 1) +
+# Plot total abundance by day
+ggplot(daily_corn_total, aes(x = date, y = total_abundance, color = site)) +
+  geom_line(size = 1) +
+  geom_point(aes(shape = site), size = 2) +  # Add points with shape
   labs(
-    title = "Total Insect Abundance Over Time (Corn-Adjacent Sites)",
-    x = "Time",
+    title = "Daily Total Insect Abundance (Corn-Adjacent Sites)",
+    x = "Date",
     y = "Total Abundance",
-    color = "Site"
+    color = "Site",
+    shape = "Site"
   ) +
   theme_minimal() +
-  scale_x_datetime(date_labels = "%b %d\n%H:%M", date_breaks = "1 day") +
   theme(
     axis.text.x = element_text(angle = 45, hjust = 1),
     legend.position = "top"
   )
 
-#By order
-long_corn_sites <- combined_all_sites %>%
+
+# Summarize daily abundance by order
+daily_corn_orders <- combined_all_sites %>%
+  filter(site %in% c("Harner C", "Rock Springs A")) %>%
+  mutate(date = as.Date(datetime)) %>%
   pivot_longer(
     cols = c(Diptera, Hymenoptera, Lepidoptera, Coleoptera),
     names_to = "order",
     values_to = "abundance"
   ) %>%
-  filter(site %in% c("Harner C", "Rock Springs A"))
+  group_by(site, date, order) %>%
+  summarise(abundance = sum(abundance, na.rm = TRUE), .groups = "drop")
 
-
-ggplot(long_corn_sites, aes(x = datetime, y = abundance, color = site)) +
-  geom_line(stat = "summary", fun = sum, size = 0.9) +
+# Plot daily abundance by order
+ggplot(daily_corn_orders, aes(x = date, y = abundance, color = site)) +
+  geom_line(size = 0.9) +
+  geom_point(aes(shape = site), size = 1.8) +  # Add points with shape
   facet_wrap(~ order, scales = "free_y") +
   labs(
-    title = "Real-Time Insect Abundance by Order (Corn-Adjacent Sites)",
-    x = "Time",
+    title = "Daily Insect Abundance by Order (Corn-Adjacent Sites)",
+    x = "Date",
     y = "Abundance",
-    color = "Site"
+    color = "Site",
+    shape = "Site"
   ) +
-  scale_x_datetime(date_labels = "%b %d\n%H:%M", date_breaks = "1 day") +
   theme_minimal() +
   theme(
     strip.text = element_text(face = "bold"),
