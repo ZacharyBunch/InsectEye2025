@@ -260,3 +260,54 @@ ggplot(plot_orders, aes(x = ymd(date), y = total_abundance, color = site, shape 
     axis.text.x = element_text(angle = 45, hjust = 1)
   )
 
+
+### Corn Adjacent Only Graphs ####
+corn_sites_data <- combined_all_sites %>%
+  filter(site %in% c("Harner C", "Rock Springs A")) %>%
+  mutate(total_abundance = Diptera + Hymenoptera + Lepidoptera + Coleoptera)
+
+#total Abundance
+
+ggplot(corn_sites_data, aes(x = datetime, y = total_abundance, color = site)) +
+  geom_line(stat = "summary", fun = sum, size = 1) +
+  labs(
+    title = "Total Insect Abundance Over Time (Corn-Adjacent Sites)",
+    x = "Time",
+    y = "Total Abundance",
+    color = "Site"
+  ) +
+  theme_minimal() +
+  scale_x_datetime(date_labels = "%b %d\n%H:%M", date_breaks = "1 day") +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top"
+  )
+
+#By order
+long_corn_sites <- combined_all_sites %>%
+  pivot_longer(
+    cols = c(Diptera, Hymenoptera, Lepidoptera, Coleoptera),
+    names_to = "order",
+    values_to = "abundance"
+  ) %>%
+  filter(site %in% c("Harner C", "Rock Springs A"))
+
+
+ggplot(long_corn_sites, aes(x = datetime, y = abundance, color = site)) +
+  geom_line(stat = "summary", fun = sum, size = 0.9) +
+  facet_wrap(~ order, scales = "free_y") +
+  labs(
+    title = "Real-Time Insect Abundance by Order (Corn-Adjacent Sites)",
+    x = "Time",
+    y = "Abundance",
+    color = "Site"
+  ) +
+  scale_x_datetime(date_labels = "%b %d\n%H:%M", date_breaks = "1 day") +
+  theme_minimal() +
+  theme(
+    strip.text = element_text(face = "bold"),
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    legend.position = "top"
+  )
+
+
