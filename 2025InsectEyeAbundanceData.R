@@ -375,7 +375,7 @@ combined_with_weather <- combined_all_sites_rounded %>%
 
 #### Weather Heat Graphs ####
 
-#Heat map#
+#Heat map total abundance#
 
 library(dplyr)
 
@@ -388,6 +388,8 @@ ggplot(heat_data, aes(x = hour, y = site, fill = abundance)) +
   geom_tile() +
   scale_fill_viridis_c() +
   labs(title = "Mean Abundance by Hour of Day", x = "Hour", y = "Site")
+
+
 
 #### Abundance with weather data ####
 # Multi-panel time series plot
@@ -557,48 +559,70 @@ final_plot <- (p_abund / p_weather) +
 # Print final figure
 final_plot
 
+#### Diel Activity ####
+# Diel activity curves for four focal orders
+# Y = number of positive occurrences (Count > 0) per hour
+
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(lubridate)
+
+orders <- c("Diptera","Hymenoptera","Lepidoptera","Coleoptera")
+
+df_hour <- combined_with_weather %>%
+  mutate(hour = lubridate::hour(datetime_rounded)) %>%
+  pivot_longer(cols = all_of(orders), names_to = "Order", values_to = "Count") %>%
+  group_by(Order, hour) %>%
+  summarise(
+    n_pos = sum(Count > 0, na.rm = TRUE),   # number of positive detections
+    .groups = "drop"
+  ) %>%
+  complete(Order, hour = 0:23, fill = list(n_pos = 0)) %>%
+  arrange(Order, hour)
+
+# Four-line plot exact data
+p_four_orders <- ggplot(df_hour, aes(x = hour, y = n_pos, color = Order, linetype = Order)) +
+  geom_line(size = 1) +
+  scale_x_continuous(breaks = seq(0, 24, 3), limits = c(0, 24)) +
+  labs(
+    title = "Detections by hour (four focal orders)",
+    x = "Time (h)",
+    y = "Number of positive detections"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "right")
+
+p_four_orders
+
+# Smoothed multi-order plot
+p_four_orders_smooth <- ggplot(df_hour, aes(x = hour, y = n_pos, color = Order, linetype = Order)) +
+#  geom_point(alpha = 0.4, size = 1.5) +   # show raw binned values
+  geom_smooth(se = FALSE, method = "loess", span = 0.5, size = 1) +
+  scale_x_continuous(breaks = seq(0, 24, 3), limits = c(0, 24)) +
+  labs(
+    title = "Smoothed diel activity (four focal orders)",
+    x = "Time (h)",
+    y = "Number of positive detections"
+  ) +
+  theme_minimal(base_size = 13) +
+  theme(legend.position = "right")
+
+p_four_orders_smooth
+
 #### Analysis ####
 library(MASS)
 library(MASS)
 library(DHARMa)
-
+library(lme4)
 library(glmmTMB)
-
-# Negative binomial GLMM
-glmm_nb <- glmmTMB(
-  total_abundance ~ air_temp + humidity + rain + solar + (1 | site),
-  family = nbinom2,
-  data = combined_with_weather
-)
-
-# Poisson GLMM
-glmm_pois <- glmmTMB(
-  total_abundance ~ air_temp + humidity + rain + solar + (1 | site),
-  family = poisson,
-  data = combined_with_weather
-)
-
-summary(glmm_nb)
-summary(glmm_pois)
-
-# Diagnostics: Negative Binomial
-sim_nb <- simulateResiduals(glm_nb)
-plot(sim_nb)
-testDispersion(sim_nb)
-#testZeroInflation(sim_nb)
-
-# Diagnostics: Poisson
-sim_pois <- simulateResiduals(glm_pois)
-plot(sim_pois)
-testDispersion(sim_pois)
-#testZeroInflation(sim_pois)
-
 library(mgcv)
-
-combined_with_weather$site <- factor(combined_with_weather$site)  # ensure factor
 
 
 # GAM
+
+combined_with_weather$site <- droplevels(factor(combined_with_weather$site))
+
 # Won't run with rain
 gam_pois <- gam(total_abundance ~ 
                   s(air_temp) + 
@@ -608,11 +632,24 @@ gam_pois <- gam(total_abundance ~
                 family = poisson,
                 data = combined_with_weather)
 
+
+gam_nb <- gam(
+  total_abundance ~ 
+    s(air_temp) +
+    s(humidity) +
+    s(solar) +
+    s(site, bs = "re"),
+  family = nb(),     # negative binomial with log link
+  method  = "REML",
+  data    = combined_with_weather,
+  na.action = na.omit
+)
+
 # Summary of the GAM
 summary(gam_pois)
 
 
 
 #AIC
-AIC(glmm_nb, glmm_pois, gam_pois)
+AIC(gam_nb, gam_pois)
 
