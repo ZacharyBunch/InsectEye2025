@@ -653,3 +653,83 @@ summary(gam_pois)
 #AIC
 AIC(gam_nb, gam_pois)
 
+
+#### GAMs For Taxa ####
+# Packages
+library(tidyverse)
+library(mgcv)
+
+df <- combined_with_weather
+
+
+taxa_cols <- c("Diptera", "Hymenoptera", "Lepidoptera", "Coleoptera")
+taxa_cols <- intersect(names(df), taxa_cols)  # keep only those that exist
+long_df <- df %>%
+  pivot_longer(
+    cols = all_of(taxa_cols),
+    names_to = "taxa",
+    values_to = "count"
+  ) %>%
+  mutate(
+    taxa = factor(taxa),
+    site = factor(site),
+    count = as.integer(count)
+  ) %>%
+  filter(!is.na(count), count > 0)
+
+library(tidyr)
+library(parallel)
+
+orders <- c("Diptera","Hymenoptera","Lepidoptera","Coleoptera")
+
+long_hour <- combined_with_weather %>%
+  pivot_longer(all_of(orders), names_to = "taxa", values_to = "count") %>%
+  mutate(
+    taxa = factor(taxa),
+    site = factor(site)
+  ) %>%
+  group_by(site, taxa, datetime_rounded) %>%
+  summarise(
+    count    = sum(count, na.rm = TRUE),     # now can be 0, 1, 2, ...
+    air_temp = mean(air_temp, na.rm = TRUE),
+    humidity = mean(humidity, na.rm = TRUE),
+    solar    = mean(solar,    na.rm = TRUE),
+    rain     = sum(rain,      na.rm = TRUE), # if rain is accumulative per record
+    .groups  = "drop"
+  ) %>%
+  filter(is.finite(air_temp), is.finite(humidity), is.finite(solar)) %>%
+  filter(!is.na(count), count > 0)
+
+# sanity check that we have variation again
+table(long_hour$count)
+
+
+# long_df <- df %>%
+#   pivot_longer(
+#     cols = all_of(taxa_cols),
+#     names_to = "taxa",
+#     values_to = "count"
+#   ) %>%
+#   mutate(
+#     taxa = factor(taxa),
+#     site = factor(site),
+#     count = as.integer(count)
+#   ) %>%
+#   filter(!is.na(count), count > 0)
+
+# 2) GAM with factor-smooth interactions
+m_gam_pois <- gam(
+  count ~ taxa +
+    s(air_temp, by = taxa) +
+    s(solar,    by = taxa) +
+    s(humidity, by = taxa) +
+    s(site, bs = "re"),
+  data   = long_hour,
+  family = poisson(link = "log"),
+  method = "REML",
+  select = TRUE
+)
+
+summary(m_gam_pois)
+gam.check(m_gam_pois)
+
