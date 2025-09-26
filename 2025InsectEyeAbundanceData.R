@@ -347,6 +347,36 @@ ggplot(daily_corn_orders, aes(x = date, y = abundance, color = site)) +
 
 
 
+library(dplyr)
+library(lubridate)
+
+
+
+# define daytime window
+daytime_hours <- 1:24
+
+# average and total abundance across all sites, excluding zero counts
+avg_total_by_hour_daytime_all_zero <- combined_all_sites %>%
+  mutate(date = as.Date(datetime)) %>%
+  filter(hour %in% daytime_hours, total_abundance > 0) %>%   # exclude zeros
+  group_by(hour) %>%
+  summarise(
+    mean_total_abundance = mean(total_abundance, na.rm = TRUE),
+    total_abundance_hour = sum(total_abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+avg_total_by_hour_daytime_all_zero
+
+# step 2: overall average of the per-hour means
+grand_mean <- avg_total_by_hour_daytime_all_zero %>%
+  summarise(avg_of_hourly_means = mean(mean_total_abundance, na.rm = TRUE))
+
+
+grand_mean
+
+
+
 ### Adding weather data ####
 library(lubridate)
 
@@ -723,6 +753,7 @@ m_gam_pois <- gam(
     s(air_temp, by = taxa) +
     s(solar,    by = taxa) +
     s(humidity, by = taxa) +
+ #   s(rain, by = taxa),
     s(site, bs = "re"),
   data   = long_hour,
   family = poisson(link = "log"),
