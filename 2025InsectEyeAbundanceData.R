@@ -375,6 +375,43 @@ grand_mean <- avg_total_by_hour_daytime_all_zero %>%
 
 grand_mean
 
+library(writexl)
+
+write_xlsx(avg_total_by_hour_daytime_all_zero,
+           path = "avg_total_by_hour_daytime_all_zero.xlsx")
+
+library(dplyr)
+library(lubridate)
+library(writexl)
+
+daytime_hours <- 1:24
+
+# average and total abundance per site and hour, excluding zeros
+avg_total_by_hour_daytime_site_zero <- combined_all_sites %>%
+  mutate(date = as.Date(datetime)) %>%
+  filter(hour %in% daytime_hours, total_abundance > 0) %>%
+  group_by(site, hour) %>%
+  summarise(
+    mean_total_abundance = mean(total_abundance, na.rm = TRUE),
+    total_abundance_hour = sum(total_abundance, na.rm = TRUE),
+    .groups = "drop"
+  )
+
+# overall average of the per-hour means, per site
+grand_mean_site <- avg_total_by_hour_daytime_site_zero %>%
+  group_by(site) %>%
+  summarise(avg_of_hourly_means = mean(mean_total_abundance, na.rm = TRUE),
+            .groups = "drop")
+
+# save both tables into one Excel file with two sheets
+write_xlsx(
+  list(
+    "hourly_by_site" = avg_total_by_hour_daytime_site_zero,
+    "grand_mean_by_site" = grand_mean_site
+  ),
+  path = "avg_total_by_hour_daytime_site_zero.xlsx"
+)
+
 
 
 ### Adding weather data ####
@@ -764,3 +801,48 @@ m_gam_pois <- gam(
 summary(m_gam_pois)
 gam.check(m_gam_pois)
 
+#### GLM ####
+# 
+# library(MASS)
+# library(dplyr)
+# 
+# # quick Poisson model
+# library(MASS)
+# 
+# m1 <- glm.nb(
+#   count ~ taxa:scale(air_temp) + 
+#     taxa:scale(humidity) + 
+#     taxa:scale(solar) +
+#   taxa:scale(rain),
+#   data = long_hour
+# )
+
+
+
+# test overdispersion
+overdispersion <- sum(residuals(m1, type = "pearson")^2) / m1$df.residual
+overdispersion
+
+#Regression model
+
+# library(ggeffects)
+# 
+# pred_hum <- ggpredict(m1, terms = c("humidity [all]", "taxa"))
+# plot(pred_hum)
+# 
+# pred_rain <- ggpredict(m1, terms = c("rain [all]", "taxa"))
+# 
+# plot(pred_rain)
+# 
+# 
+# pred_air <- ggpredict(m1, terms = c("air_temp [all]", "taxa"))
+# 
+# plot(pred_air)
+
+pred_air <- ggpredict(m_gam_pois, terms = c("air_temp [all]", "taxa"))
+
+plot(pred_air)
+
+pred_humidity <- ggpredict(m_gam_pois, terms = c("humidity [all]", "taxa"))
+
+plot(pred_humidity)
