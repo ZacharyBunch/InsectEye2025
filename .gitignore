@@ -10,3 +10,7 @@ InsectOrderAbundanceByDay7172025.png
 weather_data_old.csv
 weather_data.csv
 combined_with_weather.xlsx
+.RDataTmp
+avg_total_by_hour_daytime_all_zero.xlsx
+avg_total_by_hour_daytime_site_zero.xlsx
+weather_data_old_old.csv
