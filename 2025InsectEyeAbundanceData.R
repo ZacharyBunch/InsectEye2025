@@ -746,6 +746,7 @@ long_df <- df %>%
 
 library(tidyr)
 library(parallel)
+library(lubridate)
 
 orders <- c("Diptera","Hymenoptera","Lepidoptera","Coleoptera")
 
@@ -767,6 +768,47 @@ long_hour <- combined_with_weather %>%
   filter(is.finite(air_temp), is.finite(humidity), is.finite(solar)) %>%
   filter(!is.na(count), count > 0)
 
+#july data frame
+long_hour_july <- combined_with_weather %>%
+  pivot_longer(all_of(orders), names_to = "taxa", values_to = "count") %>%
+  mutate(
+    taxa = factor(taxa),
+    site = factor(site)
+  ) %>%
+  group_by(site, taxa, datetime_rounded) %>%
+  summarise(
+    count    = sum(count, na.rm = TRUE),     # now can be 0, 1, 2, ...
+    air_temp = mean(air_temp, na.rm = TRUE),
+    humidity = mean(humidity, na.rm = TRUE),
+    solar    = mean(solar,    na.rm = TRUE),
+    rain     = sum(rain,      na.rm = TRUE), # if rain is accumulative per record
+    .groups  = "drop"
+  ) %>%
+  filter(is.finite(air_temp), is.finite(humidity), is.finite(solar)) %>%
+  filter(!is.na(count), count > 0) %>% 
+  filter(lubridate::month(datetime_rounded) == 7)
+
+#August data frame
+long_hour_august <- combined_with_weather %>%
+  pivot_longer(all_of(orders), names_to = "taxa", values_to = "count") %>%
+  mutate(
+    taxa = factor(taxa),
+    site = factor(site)
+  ) %>%
+  group_by(site, taxa, datetime_rounded) %>%
+  summarise(
+    count    = sum(count, na.rm = TRUE),     # now can be 0, 1, 2, ...
+    air_temp = mean(air_temp, na.rm = TRUE),
+    humidity = mean(humidity, na.rm = TRUE),
+    solar    = mean(solar,    na.rm = TRUE),
+    rain     = sum(rain,      na.rm = TRUE), # if rain is accumulative per record
+    .groups  = "drop"
+  ) %>%
+  filter(is.finite(air_temp), is.finite(humidity), is.finite(solar)) %>%
+  filter(!is.na(count), count > 0) %>% 
+  filter(lubridate::month(datetime_rounded) == 8)
+  
+
 # sanity check that we have variation again
 table(long_hour$count)
 
@@ -785,23 +827,9 @@ table(long_hour$count)
 #   filter(!is.na(count), count > 0)
 
 # 2) GAM with factor-smooth interactions
-m_gam_pois <- gam(
-  count ~ taxa +
-    s(air_temp, by = taxa) +
-    s(solar,    by = taxa) +
-    s(humidity, by = taxa) +
- #   s(rain, by = taxa),
-    s(site, bs = "re"),
-  data   = long_hour,
-  family = poisson(link = "log"),
-  method = "REML",
-  select = TRUE
-)
 
-summary(m_gam_pois)
-gam.check(m_gam_pois)
 
-#### GLM ####
+#### GLM OVerall ####
 # 
 # library(MASS)
 # library(dplyr)
@@ -839,6 +867,22 @@ overdispersion
 # 
 # plot(pred_air)
 
+m_gam_pois <- gam(
+  count ~ taxa +
+    s(air_temp, by = taxa) +
+    s(solar,    by = taxa) +
+    s(humidity, by = taxa) +
+    #   s(rain, by = taxa),
+    s(site, bs = "re"),
+  data   = long_hour,
+  family = poisson(link = "log"),
+  method = "REML",
+  select = TRUE
+)
+
+summary(m_gam_pois)
+gam.check(m_gam_pois)
+
 pred_air <- ggpredict(m_gam_pois, terms = c("air_temp [all]", "taxa"))
 
 plot(pred_air)
@@ -846,3 +890,56 @@ plot(pred_air)
 pred_humidity <- ggpredict(m_gam_pois, terms = c("humidity [all]", "taxa"))
 
 plot(pred_humidity)
+
+#### GLM July ####
+m_gam_pois_july <- gam(
+  count ~ taxa +
+    s(air_temp, by = taxa) +
+    s(solar,    by = taxa) +
+    s(humidity, by = taxa) +
+    #   s(rain, by = taxa),
+    s(site, bs = "re"),
+  data   = long_hour_july,
+  family = poisson(link = "log"),
+  method = "REML",
+  select = TRUE
+)
+
+
+summary(m_gam_pois_july)
+
+pred_air_july <- ggpredict(m_gam_pois_july, terms = c("air_temp [all]", "taxa"))
+
+plot(pred_air_july)
+
+pred_humidity_july <- ggpredict(m_gam_pois, terms = c("humidity [all]", "taxa"))
+
+plot(pred_humidity_july)
+
+library(mgcv)
+library(ggeffects)
+
+#### GLM August ####
+m_gam_pois_august <- gam(
+  count ~ taxa +
+    s(air_temp, by = taxa) +
+    s(solar,    by = taxa) +
+    s(humidity, by = taxa) +
+    s(site, bs = "re"),
+  data   = long_hour_august,
+  family = poisson(link = "log"),
+  method = "REML",
+  select = TRUE
+)
+
+summary(m_gam_pois_august)
+
+# Predictions
+pred_air_august <- ggpredict(m_gam_pois_august, terms = c("air_temp [all]", "taxa"))
+plot(pred_air_august)
+
+pred_humidity_august <- ggpredict(m_gam_pois_august, terms = c("humidity [all]", "taxa"))
+plot(pred_humidity_august)
+
+pred_solar_august <- ggpredict(m_gam_pois_august, terms = c("solar [all]", "taxa"))
+plot(pred_solar_august)
