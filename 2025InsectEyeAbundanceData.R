@@ -853,7 +853,7 @@ overdispersion
 
 #Regression model
 
-# library(ggeffects)
+library(ggeffects)
 # 
 # pred_hum <- ggpredict(m1, terms = c("humidity [all]", "taxa"))
 # plot(pred_hum)
@@ -866,7 +866,11 @@ overdispersion
 # pred_air <- ggpredict(m1, terms = c("air_temp [all]", "taxa"))
 # 
 # plot(pred_air)
+# 
 
+
+# 
+# #### GLM July ####
 m_gam_pois <- gam(
   count ~ taxa +
     s(air_temp, by = taxa) +
@@ -891,7 +895,10 @@ pred_humidity <- ggpredict(m_gam_pois, terms = c("humidity [all]", "taxa"))
 
 plot(pred_humidity)
 
-#### GLM July ####
+pred_solar <- ggpredict(m_gam_pois, terms = c("solar [all]", "taxa"))
+plot(pred_solar)
+
+
 m_gam_pois_july <- gam(
   count ~ taxa +
     s(air_temp, by = taxa) +
@@ -938,8 +945,192 @@ summary(m_gam_pois_august)
 pred_air_august <- ggpredict(m_gam_pois_august, terms = c("air_temp [all]", "taxa"))
 plot(pred_air_august)
 
+pred_solar_august <- ggpredict(m_gam_pois_august, terms = c("solar [all]", "taxa"))
+plot(pred_solar_august)
+
 pred_humidity_august <- ggpredict(m_gam_pois_august, terms = c("humidity [all]", "taxa"))
 plot(pred_humidity_august)
 
-pred_solar_august <- ggpredict(m_gam_pois_august, terms = c("solar [all]", "taxa"))
-plot(pred_solar_august)
+
+
+#### Count Data ####
+
+library(dplyr)
+
+# Total counts per taxon
+total_counts <- long_hour %>%
+  group_by(taxa) %>%
+  summarise(
+    total_count = sum(count, na.rm = TRUE),
+  ) %>%
+  arrange(desc(total_count))
+
+
+total_counts
+
+
+library(dplyr)
+library(lubridate)
+
+# Summarize counts per taxon for July and August
+counts_july_aug <- long_hour %>%
+  mutate(month = month(datetime_rounded, label = TRUE)) %>%  # use the correct column name
+  filter(month %in% c("Jul", "Aug")) %>%
+  group_by(taxa, month) %>%
+  summarise(
+    total_count = sum(count, na.rm = TRUE),
+  ) %>%
+  arrange(desc(total_count))
+
+counts_july_aug
+
+
+#### Uptime ####
+
+library(dplyr)
+library(lubridate)
+library(tidyr)
+library(stringr)
+
+# INPUTS
+# Data frame must have:
+#   - machine ID column named `site`  (rename below if needed)
+#   - timestamp column named `datetime_rounded` (POSIXct or character parsable to POSIXct)
+#   - any other columns are fine
+df <- long_hour
+
+# Ensure datetime_rounded is POSIXct
+if (!inherits(df$datetime_rounded, "POSIXt")) {
+  df <- df %>%
+    mutate(datetime_rounded = ymd_hms(as.character(datetime_rounded), quiet = TRUE))
+}
+
+# Extract date and year
+df_dates <- df %>%
+  mutate(
+    date = as.Date(datetime_rounded),
+    year = year(date),
+    month_num = month(date),
+    day_num = day(date)
+  ) %>%
+  filter(month_num %in% c(7, 8, 9)) %>%
+  # Keep September only through the 15th
+  filter(!(month_num == 9 & day_num > 15))
+
+# Build a complete calendar grid: every site x every date in Jul 1 to Sep 15 for each year present
+years_in_scope <- df_dates %>% distinct(year) %>% pull(year)
+
+calendar_grid <- lapply(
+  years_in_scope,
+  function(y) tibble(date = seq.Date(as.Date(paste0(y, "-07-01")),
+                                     as.Date(paste0(y, "-09-15")),
+                                     by = "day"),
+                     year = y)
+) %>%
+  bind_rows()
+
+sites <- df %>% distinct(site)
+
+full_grid <- sites %>%
+  crossing(calendar_grid)
+
+# Mark presence per site per date
+presence <- df_dates %>%
+  group_by(site, date, year) %>%
+  summarise(present = n() > 0, .groups = "drop")
+
+# Join to the full calendar so missing days become FALSE
+uptime_daily <- full_grid %>%
+  left_join(presence, by = c("site", "date", "year")) %>%
+  mutate(present = if_else(is.na(present), FALSE, present))
+
+
+# Overall uptime by site across all years combined
+uptime_overall_by_site <- uptime_daily %>%
+  group_by(site) %>%
+  summarise(
+    up_days = sum(present),
+    total_days = n(),
+    uptime_pct = 100 * up_days / total_days,
+    .groups = "drop"
+  ) %>%
+  arrange(desc(uptime_pct))
+
+uptime_overall_by_site
+
+
+#### JUly, aug, sept uptime ####
+library(dplyr)
+library(lubridate)
+library(tidyr)
+
+# Ensure datetime_rounded is POSIXct
+if (!inherits(long_hour$datetime_rounded, "POSIXt")) {
+  long_hour <- long_hour %>%
+    mutate(datetime_rounded = ymd_hms(as.character(datetime_rounded), quiet = TRUE))
+}
+
+# Extract date and month
+df_dates <- long_hour %>%
+  mutate(
+    date = as.Date(datetime_rounded),
+    year = year(date),
+    month_num = month(date),
+    day_num = day(date)
+  )
+
+# Filter for July, August, September (1-15)
+df_dates <- df_dates %>%
+  filter(month_num %in% c(7, 8, 9)) %>%
+  filter(!(month_num == 9 & day_num > 15))
+
+# Identify all years and sites
+years_in_scope <- unique(df_dates$year)
+sites <- df_dates %>% distinct(site)
+
+# Helper function for uptime calculation by month
+calc_uptime_month <- function(m) {
+  cal_grid <- lapply(
+    years_in_scope,
+    function(y) tibble(date = seq.Date(
+      as.Date(paste0(y, "-", sprintf("%02d", m), "-01")),
+      if (m == 9) as.Date(paste0(y, "-", sprintf("%02d", m), "-15")) else as.Date(paste0(y, "-", sprintf("%02d", m), "-", days_in_month(as.Date(paste0(y, "-", m, "-01"))))),
+      by = "day"
+    ),
+    year = y)
+  ) %>% bind_rows()
+  
+  full_grid <- sites %>%
+    crossing(cal_grid)
+  
+  presence <- df_dates %>%
+    filter(month_num == m) %>%
+    group_by(site, date, year) %>%
+    summarise(present = n() > 0, .groups = "drop")
+  
+  uptime_daily <- full_grid %>%
+    left_join(presence, by = c("site", "date", "year")) %>%
+    mutate(present = if_else(is.na(present), FALSE, present))
+  
+  uptime_month <- uptime_daily %>%
+    group_by(site, year) %>%
+    summarise(
+      up_days = sum(present),
+      total_days = n(),
+      uptime_pct = 100 * up_days / total_days,
+      .groups = "drop"
+    ) %>%
+    mutate(month = month.name[m])
+  
+  uptime_month
+}
+
+# Run for July, August, September
+uptime_july <- calc_uptime_month(7)
+uptime_august <- calc_uptime_month(8)
+uptime_september <- calc_uptime_month(9)
+
+# Combine results
+uptime_all <- bind_rows(uptime_july, uptime_august, uptime_september)
+
+uptime_all
