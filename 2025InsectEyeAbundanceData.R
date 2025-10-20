@@ -1134,3 +1134,32 @@ uptime_september <- calc_uptime_month(9)
 uptime_all <- bind_rows(uptime_july, uptime_august, uptime_september)
 
 uptime_all
+
+#### New weather graph ####
+
+
+Long_abundance_climate <- combined_with_weather %>% 
+  group_by()
+
+library(dplyr)
+
+library(dplyr)
+
+summed_by_time_site_order <- combined_with_weather %>%
+  group_by(datetime_rounded, date, site) %>%
+  summarise(
+    Diptera = sum(Diptera, na.rm = TRUE),
+    Hymenoptera = sum(Hymenoptera, na.rm = TRUE),
+    Lepidoptera = sum(Lepidoptera, na.rm = TRUE),
+    Coleoptera = sum(Coleoptera, na.rm = TRUE),
+    total_abundance = sum(total_abundance, na.rm = TRUE),
+    air_temp = mean(air_temp, na.rm = TRUE),
+    humidity = mean(humidity, na.rm = TRUE),
+    solar = mean(solar, na.rm = TRUE),
+    rain = sum(rain, na.rm = TRUE)
+  ) %>%
+  ungroup()
+
+head(summed_by_time_site_order)
+
+
