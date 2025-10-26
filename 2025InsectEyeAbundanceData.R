@@ -1162,4 +1162,312 @@ summed_by_time_site_order <- combined_with_weather %>%
 
 head(summed_by_time_site_order)
 
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
 
+# 1) Aggregate to date x hour x site and summarize weather
+by_date_hour <- combined_with_weather %>%
+  mutate(
+    date = as.Date(date),
+    hour = hour(datetime_rounded)
+  ) %>%
+  group_by(site, date, hour) %>%
+  summarise(
+    total_abundance = sum(total_abundance, na.rm = TRUE),
+    air_temp = mean(air_temp, na.rm = TRUE),
+    humidity = mean(humidity, na.rm = TRUE),
+    solar = mean(solar, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(hour = factor(hour, levels = 0:23))
+view(by_date)
+library(dplyr)
+library(tidyr)
+library(lubridate)
+library(ggplot2)
+
+# 1) Aggregate across all sites to date x hour
+agg_all <- combined_with_weather %>%
+  mutate(
+    date = as.Date(date),
+    hour = hour(datetime_rounded)
+  ) %>%
+  group_by(date, hour) %>%
+  summarise(
+    total_abundance = sum(total_abundance, na.rm = TRUE),
+    air_temp  = mean(air_temp,  na.rm = TRUE),
+    humidity  = mean(humidity,  na.rm = TRUE),
+    solar     = mean(solar,     na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  mutate(hour = factor(hour, levels = 0:23))
+
+# 2) Scale weather lines to overlay on the abundance axis
+max_abund <- max(agg_all$total_abundance, na.rm = TRUE)
+
+weather_long_all <- agg_all %>%
+  dplyr::select(date, hour, air_temp, humidity, solar) %>%
+  tidyr::pivot_longer(cols = c(air_temp, humidity, solar),
+                      names_to = "variable", values_to = "value") %>%
+  group_by(variable) %>%
+  mutate(
+    v_min = min(value, na.rm = TRUE),
+    v_max = max(value, na.rm = TRUE),
+    v_scaled01 = ifelse(v_max > v_min, (value - v_min) / (v_max - v_min), 0)
+  ) %>%
+  ungroup() %>%
+  mutate(y_overlay = v_scaled01 * max_abund * 0.95)
+
+# 3) Plot with smoothed weather overlays
+ggplot() +
+  geom_col(
+    data = agg_all,
+    aes(x = date, y = total_abundance,fill = hour),
+    position = position_dodge(width = 0.4),
+    width = 0.4) +
+  geom_smooth(
+    data = weather_long_all,
+    aes(x = date, y = y_overlay, color = variable),
+    se = FALSE,
+    method = "loess",
+    span = 0.3,
+    linewidth = 0.9
+  )
+  labs(
+    x = "Date",
+    y = "Total abundance (all sites summed)",
+    title = "Daily abundance by hour with smoothed weather overlays (all sites combined)",
+    subtitle = "Weather lines are scaled within variable to the global max abundance"
+  ) +
+  scale_x_date(date_breaks = "7 days", date_labels = "%b %d") +
+  guides(fill = guide_legend(title = "Hour"), color = guide_legend(title = "Weather")) +
+  theme_minimal(base_size = 12) +
+  theme(
+    axis.text.x = element_text(angle = 45, hjust = 1),
+    panel.grid.minor = element_blank(),
+    plot.title = element_text(hjust = 0.5)
+  )
+
+
+
+#### New Weather Graph 2 ####
+
+#### Zachary Weather Graph ####
+  # ONE WEEK: hourly insect bars + raw weather lines (no binning, no smoothing)
+  # Weather is scaled per day to the insect axis. All sites combined.
+  # Adds a vertical line at local noon for each day and removes day shading.
+  
+  library(tidyverse)
+  library(lubridate)
+  library(scales)
+  
+  day_start <- 7
+  day_end   <- 19
+  
+  # Pick any date inside the target week
+  week_date  <- as.Date("2025-08-12")   # change as needed
+  week_start <- floor_date(week_date, "week", week_start = 1)
+  week_end   <- week_start + days(6)
+  
+  # ============================================
+  # Hourly insect bars + weather lines (week)
+  # Weather minutes interpolated on a single-week grid,
+  # then scaled PER DAY to the insect axis.
+  # --------------------------------------------
+  # Assumes you already have:
+  #   combined_all_sites : data.frame with a POSIXct 'datetime' and insect columns
+  #   weather_data       : data.frame with a POSIXct 'datetime' and columns
+  #                        air_temp, humidity, solar (numeric/coercible)
+  # ============================================
+  
+  suppressPackageStartupMessages({
+    library(tidyverse)
+    library(lubridate)
+    library(scales)
+    library(zoo)
+    library(purrr)
+  })
+  
+  # ----------------- params -------------------
+  day_start <- 0                         # start hour (inclusive)
+  day_end   <- 24                        # end hour (exclusive)
+  week_date  <- as.Date("2025-08-12")    # any date inside the target ISO week
+  week_start <- floor_date(week_date, "week", week_start = 1) # Monday
+  week_end   <- week_start + days(6)
+  
+  # ----------------- insect counts -----------
+  possible_insect_cols <- c("total_abundance","CountOfInsect","insect_count","Count")
+  have_insect <- intersect(possible_insect_cols, names(combined_all_sites))
+  
+  if (length(have_insect) == 1) {
+    combined_counts <- combined_all_sites %>%
+      mutate(insect_raw = .data[[have_insect]])
+  } else {
+    exclude_cols <- c("source_file","motionEvent","filename","site","date","time_str",
+                      "hour","minute","second","datetime")
+    num_cols  <- names(combined_all_sites)[vapply(combined_all_sites, is.numeric, logical(1))]
+    taxa_cols <- setdiff(num_cols, intersect(num_cols, exclude_cols))
+    stopifnot(length(taxa_cols) > 0)
+    combined_counts <- combined_all_sites %>%
+      mutate(insect_raw = rowSums(across(all_of(taxa_cols)), na.rm = TRUE))
+  }
+  
+  counts_hr_raw <- combined_counts %>%
+    mutate(hour_bin = floor_date(datetime, "hour")) %>%
+    group_by(hour_bin) %>%
+    summarise(insect_count = sum(insect_raw, na.rm = TRUE), .groups = "drop")
+  
+  grid_hours <- tibble(
+    hour_bin = seq(as_datetime(week_start) + hours(day_start),
+                   as_datetime(week_end)   + hours(day_end),
+                   by = "1 hour")
+  ) %>%
+    filter(hour(hour_bin) >= day_start, hour(hour_bin) < day_end)
+  
+  counts_hr <- grid_hours %>%
+    left_join(counts_hr_raw, by = "hour_bin") %>%
+    mutate(insect_count = replace_na(insect_count, 0))
+  
+  # ----------------- weather (continuous week grid + interpolation) -----------
+  wx_raw <- weather_data %>%
+    filter(datetime >= as_datetime(week_start),
+           datetime <  as_datetime(week_end) + days(1)) %>%
+    transmute(
+      datetime = as_datetime(datetime),
+      temp     = readr::parse_number(as.character(air_temp)),
+      humidity = readr::parse_number(as.character(humidity)),
+      solar    = readr::parse_number(as.character(solar))
+    ) %>%
+    arrange(datetime)
+  
+  tz_str <- tz(wx_raw$datetime[1]); if (is.na(tz_str) || tz_str == "") tz_str <- "UTC"
+  
+  # One continuous minute grid from 00:00 Mon -> 00:00 next Mon (includes 24:00 of Sun)
+  grid_all <- tibble(
+    datetime = seq(as.POSIXct(week_start, tz = tz_str),
+                   as.POSIXct(week_end + days(1), tz = tz_str),
+                   by = "1 min")
+  )
+  
+  # Collapse raw to unique minutes (if multiple per minute, average)
+  wx_min <- wx_raw %>%
+    mutate(datetime = floor_date(datetime, "minute")) %>%
+    group_by(datetime) %>%
+    summarise(
+      temp     = mean(temp, na.rm = TRUE),
+      humidity = mean(humidity, na.rm = TRUE),
+      solar    = mean(solar, na.rm = TRUE),
+      .groups  = "drop"
+    )
+  
+  # Interpolation helper (rule=2 extrapolates edges; tweak max_gap_minutes if you want breaks)
+  interp <- function(x, tnum, max_gap_minutes = Inf) {
+    mg <- if (is.finite(max_gap_minutes)) as.integer(max_gap_minutes) else .Machine$integer.max
+    zoo::na.approx(x, x = tnum, na.rm = FALSE, rule = 2, maxgap = mg)
+  }
+  
+  wx_filled <- grid_all %>%
+    left_join(wx_min, by = "datetime") %>%
+    arrange(datetime) %>%
+    mutate(
+      tnum     = as.numeric(datetime),
+      temp     = interp(temp,     tnum, max_gap_minutes = Inf),  # set to e.g. 120 to cap bridging
+      humidity = interp(humidity, tnum, max_gap_minutes = Inf),
+      solar    = interp(solar,    tnum, max_gap_minutes = Inf)
+    ) %>%
+    mutate(day = as_date(datetime)) %>%
+    select(-tnum)
+  
+  # ----------------- scale weather per day to insect axis ----------------------
+  ymax <- max(counts_hr$insect_count, na.rm = TRUE); if (!is.finite(ymax) || ymax == 0) ymax <- 1
+  # set different “heights” for each series
+  amp <- c(temp = 0.35, humidity = 0.25, solar = 0.20)
+  
+  per_day_scale <- function(x, target) {
+    lo <- suppressWarnings(min(x, na.rm = TRUE))
+    hi <- suppressWarnings(max(x, na.rm = TRUE))
+    if (!is.finite(lo) || !is.finite(hi) || hi <= lo) return(rep(target * 0.5, length(x)))
+    target * (x - lo) / (hi - lo)
+  }
+  
+  wx_scaled <- wx_filled %>%
+    group_by(day) %>%
+    mutate(
+      temp_s  = per_day_scale(temp,     ymax * amp["temp"]),
+      hum_s   = per_day_scale(humidity, ymax * amp["humidity"]),
+      solar_s = per_day_scale(solar,    ymax * amp["solar"])
+    ) %>%
+    ungroup()
+  
+  wx_long <- wx_scaled %>%
+    select(datetime, day, temp_s, hum_s, solar_s) %>%
+    pivot_longer(-c(datetime, day), names_to = "series", values_to = "y") %>%
+    mutate(series = recode(series,
+                           temp_s  = "Temperature",
+                           hum_s   = "Humidity",
+                           solar_s = "Solar")) %>%
+    arrange(series, datetime) %>%
+    filter(is.finite(y))
+  
+  # ----------------- day labels and noon lines -------------------------------
+  days_seq <- seq.Date(week_start, week_end, by = "day")
+  days_tbl <- tibble(day = days_seq) %>%
+    mutate(label_x = as_datetime(day) + hours(12),
+           label   = format(day, "%m-%d"))
+  noon_df  <- days_tbl %>% transmute(noon = as_datetime(day) + hours(12))
+  
+  # ----------------- colors ---------------------------------------------------
+  bar_col    <- rgb(211,211,212, maxColorValue = 255)
+  temp_col   <- rgb(221,110, 96, maxColorValue = 255)   # red
+  hum_col    <- rgb(153,120,190, maxColorValue = 255)   # purple
+  solar_col  <- rgb(231,206,143, maxColorValue = 255)   # yellow
+  pal <- c("Temperature" = temp_col, "Humidity" = hum_col, "Solar" = solar_col)
+  
+  # ----------------- plot -----------------------------------------------------
+  # ---------- Updated plot: darker abundance bars ----------
+  ggplot() +
+    geom_vline(data = noon_df,
+               aes(xintercept = as.numeric(noon)),
+               color = "grey40", linewidth = 0.4) +     # slightly darker noon lines
+    geom_col(
+      data = counts_hr,
+      aes(x = hour_bin, y = insect_count),
+      fill = rgb(130,130,135, maxColorValue = 255),     # darker grey fill
+      alpha = 0.45,                                     # less transparency (was 0.35)
+      width = 3600, colour = NA
+    ) +
+    geom_text(
+      data = days_tbl,
+      aes(x = label_x, y = -0.06 * ymax, label = label),
+      size = 3, vjust = 1
+    ) +
+    coord_cartesian(ylim = c(-0.08 * ymax, 1.05 * ymax), clip = "off") +
+    scale_x_datetime(expand = expansion(mult = c(0, 0))) +
+    scale_color_manual(values = pal, name = "Weather") +
+    labs(
+      x = NULL, y = "Insect Count",
+      title = paste("Hourly insect counts with weather | Week of", format(week_start, "%Y-%m-%d")),
+      subtitle = "Full day 00:00 to 24:00. Insect hours filled to zero. Weather lines interpolated on a single-week grid and scaled per day.",
+      caption  = "Weather scaled per day to insect axis"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      plot.margin = margin(10, 20, 35, 10),
+      legend.position = "top",
+      legend.title = element_text(size = 10),
+      legend.text  = element_text(size = 9)
+    ) +
+    # group ONLY by series to avoid breaks at midnight
+    geom_path(
+      data = wx_long,
+      aes(x = datetime, y = y, color = series, group = series),
+      linewidth = 0.9,
+      lineend = "round",
+      linejoin = "round"
+    )
+  
