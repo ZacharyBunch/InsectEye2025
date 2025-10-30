@@ -1293,7 +1293,7 @@ ggplot() +
   # ----------------- params -------------------
   day_start <- 0                         # start hour (inclusive)
   day_end   <- 24                        # end hour (exclusive)
-  week_date  <- as.Date("2025-08-12")    # any date inside the target ISO week
+  week_date  <- as.Date("2025-07-14")    # any date inside the target ISO week
   week_start <- floor_date(week_date, "week", week_start = 1) # Monday
   week_end   <- week_start + days(6)
   
@@ -1470,4 +1470,378 @@ ggplot() +
       lineend = "round",
       linejoin = "round"
     )
+  
+#### Bunch Weather Graph with extended days ####
+
+  suppressPackageStartupMessages({
+    library(tidyverse); library(lubridate); library(zoo); library(scales); library(purrr)
+  })
+  
+  # ----------------- window: 30 days from July 8 -----------------
+  day_start  <- 0
+  day_end    <- 24
+  span_start <- as.Date("2025-07-08")
+  span_days  <- 58
+  span_end   <- span_start + days(span_days - 1)
+  
+  # ----------------- insect counts -----------------
+  possible_insect_cols <- c("total_abundance","CountOfInsect","insect_count","Count")
+  have_insect <- intersect(possible_insect_cols, names(combined_all_sites))
+  
+  if (length(have_insect) == 1) {
+    combined_counts <- combined_all_sites %>% mutate(insect_raw = .data[[have_insect]])
+  } else {
+    exclude_cols <- c("source_file","motionEvent","filename","site","date","time_str",
+                      "hour","minute","second","datetime")
+    num_cols  <- names(combined_all_sites)[vapply(combined_all_sites, is.numeric, logical(1))]
+    taxa_cols <- setdiff(num_cols, intersect(num_cols, exclude_cols))
+    stopifnot(length(taxa_cols) > 0)
+    combined_counts <- combined_all_sites %>%
+      mutate(insect_raw = rowSums(across(all_of(taxa_cols)), na.rm = TRUE))
+  }
+  
+  counts_hr_raw <- combined_counts %>%
+    mutate(hour_bin = floor_date(datetime, "hour")) %>%
+    group_by(hour_bin) %>%
+    summarise(insect_count = sum(insect_raw, na.rm = TRUE), .groups = "drop")
+  
+  grid_hours <- tibble(
+    hour_bin = seq(as_datetime(span_start) + hours(day_start),
+                   as_datetime(span_end)   + days(1) + hours(0), # include last day to 24:00
+                   by = "1 hour")
+  ) %>% filter(hour(hour_bin) >= day_start, hour(hour_bin) < day_end)
+  
+  counts_hr <- grid_hours %>%
+    left_join(counts_hr_raw, by = "hour_bin") %>%
+    mutate(insect_count = replace_na(insect_count, 0))
+  
+  # ----------------- weather (continuous span grid + interpolation) -----------------
+  wx_raw <- weather_data %>%
+    filter(datetime >= as_datetime(span_start),
+           datetime <  as_datetime(span_end) + days(1)) %>%
+    transmute(
+      datetime = as_datetime(datetime),
+      temp     = readr::parse_number(as.character(air_temp)),
+      humidity = readr::parse_number(as.character(humidity)),
+      solar    = readr::parse_number(as.character(solar))
+    ) %>%
+    arrange(datetime)
+  
+  tz_str <- tz(wx_raw$datetime[1]); if (is.na(tz_str) || tz_str == "") tz_str <- "UTC"
+  
+  # minute grid: start 00:00 on span_start to 00:00 after span_end (i.e., includes 24:00 of last day)
+  grid_all <- tibble(
+    datetime = seq(as.POSIXct(span_start, tz = tz_str),
+                   as.POSIXct(span_end + days(1), tz = tz_str),
+                   by = "1 min")
+  )
+  
+  wx_min <- wx_raw %>%
+    mutate(datetime = floor_date(datetime, "minute")) %>%
+    group_by(datetime) %>%
+    summarise(
+      temp     = mean(temp, na.rm = TRUE),
+      humidity = mean(humidity, na.rm = TRUE),
+      solar    = mean(solar, na.rm = TRUE),
+      .groups  = "drop"
+    )
+  
+  interp <- function(x, tnum, max_gap_minutes = Inf) {
+    mg <- if (is.finite(max_gap_minutes)) as.integer(max_gap_minutes) else .Machine$integer.max
+    zoo::na.approx(x, x = tnum, na.rm = FALSE, rule = 2, maxgap = mg)
+  }
+  
+  wx_filled <- grid_all %>%
+    left_join(wx_min, by = "datetime") %>%
+    arrange(datetime) %>%
+    mutate(
+      tnum     = as.numeric(datetime),
+      temp     = interp(temp,     tnum, max_gap_minutes = Inf),
+      humidity = interp(humidity, tnum, max_gap_minutes = Inf),
+      solar    = interp(solar,    tnum, max_gap_minutes = Inf)
+    ) %>%
+    mutate(day = as_date(datetime)) %>%
+    select(-tnum)
+  
+  # ----------------- scale weather per day to insect axis -----------------
+  ymax <- max(counts_hr$insect_count, na.rm = TRUE); if (!is.finite(ymax) || ymax == 0) ymax <- 1
+  
+  # per-series dampening (adjust to taste)
+  amp <- c(temp = 0.20, humidity = 0.15, solar = 0.15)
+  
+  per_day_scale <- function(x, target) {
+    lo <- suppressWarnings(min(x, na.rm = TRUE))
+    hi <- suppressWarnings(max(x, na.rm = TRUE))
+    if (!is.finite(lo) || !is.finite(hi) || hi <= lo) return(rep(target * 0.5, length(x)))
+    target * (x - lo) / (hi - lo)
+  }
+  
+  wx_scaled <- wx_filled %>%
+    group_by(day) %>%
+    mutate(
+      temp_s  = per_day_scale(temp,     ymax * amp["temp"]),
+      hum_s   = per_day_scale(humidity, ymax * amp["humidity"]),
+      solar_s = per_day_scale(solar,    ymax * amp["solar"])
+    ) %>%
+    ungroup()
+  
+  wx_long <- wx_scaled %>%
+    select(datetime, day, temp_s, hum_s, solar_s) %>%
+    pivot_longer(-c(datetime, day), names_to = "series", values_to = "y") %>%
+    mutate(series = recode(series,
+                           temp_s  = "Temperature",
+                           hum_s   = "Humidity",
+                           solar_s = "Solar")) %>%
+    arrange(series, datetime) %>%
+    filter(is.finite(y))
+  
+  # ----------------- day labels & noon lines -----------------
+  days_seq <- seq.Date(span_start, span_end, by = "day")
+  days_tbl <- tibble(day = days_seq) %>%
+    mutate(label_x = as_datetime(day) + hours(12),
+           label   = format(day, "%m-%d"))
+  noon_df  <- days_tbl %>% transmute(noon = as_datetime(day) + hours(12))
+  
+  # Optional: thin labels to every 2nd or 3rd day to reduce clutter
+  label_every <- 2
+  days_tbl_lab <- days_tbl %>% filter(row_number() %% label_every == 1)
+  
+  # ----------------- colors -----------------
+  bar_col    <- rgb(130,130,135, maxColorValue = 255)  # darker bars
+  temp_col   <- rgb(221,110, 96, maxColorValue = 255)  # red
+  hum_col    <- rgb(153,120,190, maxColorValue = 255)  # purple
+  solar_col  <- rgb(231,206,143, maxColorValue = 255)  # yellow
+  pal <- c("Temperature" = temp_col, "Humidity" = hum_col, "Solar" = solar_col)
+  
+  # ----------------- plot -----------------
+  p <- ggplot() +
+    geom_vline(data = noon_df, aes(xintercept = as.numeric(noon)),
+               color = "grey40", linewidth = 0.4) +
+    geom_col(data = counts_hr, aes(x = hour_bin, y = insect_count),
+             fill = bar_col, alpha = 0.45, width = 3600, colour = NA) +
+    geom_text(data = days_tbl_lab,
+              aes(x = label_x, y = -0.06 * ymax, label = label),
+              size = 3, vjust = 1) +
+    coord_cartesian(ylim = c(-0.08 * ymax, 1.05 * ymax), clip = "off") +
+    scale_x_datetime(expand = expansion(mult = c(0, 0))) +
+    scale_color_manual(values = pal, name = "Weather") +
+    labs(
+      x = NULL, y = "Insect Count",
+      title = paste0("Hourly insect counts with weather | ",
+                     format(span_start, "%Y-%m-%d"), " to ", format(span_end, "%Y-%m-%d")),
+      subtitle = "30-day window; insect hours filled to zero. Weather lines interpolated on a single span and scaled per day.",
+      caption  = "Weather scaled per day to insect axis"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      panel.grid.minor = element_blank(),
+      axis.text.x = element_blank(),
+      axis.ticks.x = element_blank(),
+      plot.margin = margin(10, 20, 35, 10),
+      legend.position = "left",                # << moved from "top" to left
+      legend.justification = "center",
+      legend.box.margin = margin(0, 12, 0, 0), # a little space between legend and plot
+      legend.title = element_text(size = 10),
+      legend.text  = element_text(size = 9),
+      legend.key.height = unit(0.8, "lines"),
+      legend.key.width  = unit(1.2, "lines")
+    ) +
+    geom_path(data = wx_long,
+              aes(x = datetime, y = y, color = series, group = series),
+              linewidth = 0.9, lineend = "round", linejoin = "round")
+  
+  ggsave("insects_weather_30d.pdf", p,
+         width = 55, height = 6, units = "in",
+         device = cairo_pdf, dpi = 300, bg = "white", limitsize = FALSE)
+  
+
+#### Bunch Weather and Order Graph ####
+  # --- Libraries ---
+  library(tidyverse)
+  library(lubridate)
+  library(patchwork)
+  library(scales)
+  library(rlang)
+  library(zoo)
+  library(purrr)
+  
+  # --- Parameters ---
+  week_start <- ymd_hms("2025-07-24 00:00:00")
+  week_end   <- week_start + days(7)
+  bar_width_sec <- 0.7 * 3600
+  bar_half_sec  <- bar_width_sec / 2
+  
+  taxa_cols_wanted <- c("Diptera","Hymenoptera","Lepidoptera","Coleoptera")
+  taxa_pal <- c(Diptera="#3B82F6", Hymenoptera="#EF4444",
+                Lepidoptera="#22C55E", Coleoptera="#E879F9")
+  
+  # --- Helpers ---
+  dt_coalesce <- function(df) {
+    cands <- intersect(names(df), c("datetime","datetime_rounded","datetime.x","datetime.y"))
+    if (length(cands) == 0) stop("No datetime column found.")
+    mutate(df, datetime_any = coalesce(!!!syms(cands)))
+  }
+  
+  hours_grid <- tibble(datetime = seq(week_start, week_end - hours(1), by = "1 hour"))
+  
+  # ===================== Insects (all sites) =====================
+  taxa_cols <- intersect(taxa_cols_wanted, names(combined_all_sites))
+  
+  counts_all <- combined_all_sites %>%
+    dt_coalesce() %>%
+    filter(!is.na(datetime_any)) %>%
+    mutate(datetime = floor_date(datetime_any, "hour")) %>%
+    group_by(datetime) %>%
+    summarise(across(all_of(taxa_cols), ~ sum(.x, na.rm = TRUE)), .groups = "drop") %>%
+    right_join(hours_grid, by = "datetime") %>%
+    arrange(datetime) %>%
+    mutate(across(all_of(taxa_cols), ~ replace_na(.x, 0L))) %>%
+    filter(datetime >= week_start, datetime < week_end)
+  
+  hour_totals <- counts_all %>%
+    transmute(datetime, total = rowSums(across(all_of(taxa_cols)), na.rm = TRUE))
+  
+  counts_long <- counts_all %>%
+    pivot_longer(all_of(taxa_cols), names_to = "taxon", values_to = "count") %>%
+    mutate(taxon = factor(taxon, levels = taxa_cols_wanted[taxa_cols_wanted %in% taxa_cols]))
+  
+  ymax_counts <- max(hour_totals$total, na.rm = TRUE)
+  if (!is.finite(ymax_counts) || ymax_counts < 1) ymax_counts <- 1
+  
+  # ===================== Grey rectangles for gaps (never touch bars or edges) =====================
+  r <- rle(hour_totals$total == 0)
+  ends   <- cumsum(r$lengths)
+  starts <- ends - r$lengths + 1
+  runs <- tibble(start_idx = starts, end_idx = ends, is_zero = r$values)
+  
+  n_rows <- nrow(hour_totals)
+  gap_sec <- 600          # buffer from bars
+  edge_pad_sec <- 600     # buffer from plot edges
+  
+  runs_checked <- runs %>%
+    mutate(
+      has_left  = start_idx > 1,
+      has_right = end_idx   < n_rows,
+      left_idx  = if_else(has_left,  start_idx - 1L, 1L),
+      right_idx = if_else(has_right, end_idx + 1L, n_rows),
+      left_val  = if_else(has_left,  hour_totals$total[left_idx],  NA_real_),
+      right_val = if_else(has_right, hour_totals$total[right_idx], NA_real_),
+      left_nonzero  = has_left  & replace_na(left_val  > 0, FALSE),
+      right_nonzero = has_right & replace_na(right_val > 0, FALSE)
+    )
+  
+  internal <- runs_checked %>%
+    filter(is_zero & left_nonzero & right_nonzero) %>%
+    transmute(
+      prev_center = hour_totals$datetime[start_idx - 1L],
+      next_center = hour_totals$datetime[end_idx + 1L],
+      xmin = prev_center + seconds(bar_half_sec + gap_sec),
+      xmax = next_center - seconds(bar_half_sec + gap_sec)
+    )
+  
+  nz_idx <- which(hour_totals$total > 0)
+  first_nz <- if (length(nz_idx)) nz_idx[1] else NA_integer_
+  leading <- if (!is.na(first_nz) && first_nz > 1) {
+    tibble(
+      xmin = week_start + seconds(edge_pad_sec),
+      xmax = hour_totals$datetime[first_nz] - seconds(bar_half_sec + gap_sec)
+    )
+  } else tibble(xmin = as.POSIXct(character()), xmax = as.POSIXct(character()))
+  
+  last_nz <- if (length(nz_idx)) tail(nz_idx, 1) else NA_integer_
+  trailing <- if (!is.na(last_nz) && last_nz < n_rows) {
+    tibble(
+      xmin = hour_totals$datetime[last_nz] + seconds(bar_half_sec + gap_sec),
+      xmax = week_end - seconds(edge_pad_sec)
+    )
+  } else tibble(xmin = as.POSIXct(character()), xmax = as.POSIXct(character()))
+  
+  gaps_df <- bind_rows(internal, leading, trailing) %>%
+    filter(xmax > xmin) %>%
+    mutate(ymin = 0, ymax = 0.10 * ymax_counts)
+  
+  # ===================== Weather (raw points only, no interpolation, no grid join) =====================
+  # Aggregate to hourly, filter to week, keep only observed timestamps so lines connect across actual points.
+  wx_all <- combined_with_weather %>%
+    dt_coalesce() %>%
+    filter(!is.na(datetime_any)) %>%
+    mutate(datetime = floor_date(datetime_any, "hour")) %>%
+    filter(datetime >= week_start, datetime < week_end) %>%
+    group_by(datetime) %>%
+    summarise(
+      air_temp = mean(air_temp, na.rm = TRUE),
+      solar    = mean(solar,    na.rm = TRUE),
+      humidity = mean(humidity, na.rm = TRUE),
+      .groups  = "drop"
+    ) %>%
+    arrange(datetime)
+  
+  # scale to temperature range using observed maxima within the window
+  max_temp <- max(wx_all$air_temp, na.rm = TRUE); if (!is.finite(max_temp)) max_temp <- 1
+  smax <- max(wx_all$solar, na.rm = TRUE); solar_scale <- if (is.finite(smax) && smax > 0) max_temp / smax else 1
+  hmax <- max(wx_all$humidity, na.rm = TRUE); hum_scale <- if (is.finite(hmax) && hmax > 0) max_temp / hmax else 1
+  
+  wx_plot <- wx_all %>%
+    mutate(
+      solar_plot = solar * solar_scale,
+      hum_plot   = humidity * hum_scale
+    )
+  
+  # ===================== Plots =====================
+  p_top <- ggplot() +
+    geom_rect(
+      data = gaps_df,
+      aes(xmin = xmin, xmax = xmax, ymin = ymin, ymax = ymax),
+      fill = "grey70", alpha = 0.45, inherit.aes = FALSE
+    ) +
+    geom_col(
+      data = counts_long,
+      aes(x = datetime, y = count, fill = taxon),
+      width = bar_width_sec, color = NA
+    ) +
+    scale_fill_manual(values = taxa_pal, breaks = names(taxa_pal), name = NULL) +
+    coord_cartesian(ylim = c(0, ymax_counts * 1.05), xlim = c(week_start, week_end), clip = "off") +
+    scale_y_continuous(expand = expansion(mult = c(0, 0.03))) +
+    scale_x_datetime(NULL, breaks = pretty_breaks(n = 14), date_labels = "%b %d\n%H:%M", expand = c(0, 0)) +
+    labs(
+      title = paste0("All sites combined  |  Week starting ", format(week_start, "%Y-%m-%d")),
+      y = "Insect Number"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      legend.position = "left",
+      panel.grid.minor = element_blank(),
+      plot.title = element_text(face = "bold", size = 13)
+    )
+  
+  p_bottom <- ggplot(wx_plot, aes(x = datetime)) +
+    geom_line(aes(y = air_temp,  color = "Temperature (°C)"), linewidth = 0.9, na.rm = TRUE) +
+    geom_point(aes(y = air_temp,  color = "Temperature (°C)"), size = 0.8, na.rm = TRUE) +
+    geom_line(aes(y = solar_plot, color = "Solar (scaled)"),   linewidth = 0.85, na.rm = TRUE) +
+    geom_point(aes(y = solar_plot, color = "Solar (scaled)"),  size = 0.7, na.rm = TRUE) +
+    geom_line(aes(y = hum_plot,   color = "Humidity (scaled)"),linewidth = 0.85, na.rm = TRUE) +
+    geom_point(aes(y = hum_plot,  color = "Humidity (scaled)"),size = 0.7, na.rm = TRUE) +
+    scale_color_manual(
+      values = c("Temperature (°C)" = "#DC2626",
+                 "Solar (scaled)"   = "#EAB308",
+                 "Humidity (scaled)" = "#22D3EE"),
+      name = NULL
+    ) +
+    scale_y_continuous(name = "Weather Metrics") +
+    coord_cartesian(xlim = c(week_start, week_end)) +
+    scale_x_datetime(NULL, breaks = pretty_breaks(n = 14), date_labels = "%b %d\n%H:%M", expand = c(0, 0)) +
+    theme_minimal(base_size = 12) +
+    theme(
+      legend.position = "left",
+      panel.grid.minor = element_blank()
+    )
+  
+  final_plot <- p_top / p_bottom + plot_layout(heights = c(2, 1))
+  
+  ggsave(
+    filename = paste0("insect_weather_week_", format(week_start, "%Y-%m-%d"), "_ALL.png"),
+    plot = final_plot,
+    width = 36, height = 10, units = "in", dpi = 300,
+    bg = "white", limitsize = FALSE
+  )
   
