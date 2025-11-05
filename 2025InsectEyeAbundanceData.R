@@ -891,6 +891,8 @@ pred_air <- ggpredict(m_gam_pois, terms = c("air_temp [all]", "taxa"))
 
 plot(pred_air)
 
+
+
 pred_humidity <- ggpredict(m_gam_pois, terms = c("humidity [all]", "taxa"))
 
 plot(pred_humidity)
@@ -1472,12 +1474,17 @@ ggplot() +
     )
   
 #### Bunch Weather Graph with extended days ####
-
+  
   suppressPackageStartupMessages({
-    library(tidyverse); library(lubridate); library(zoo); library(scales); library(purrr)
+    library(tidyverse)
+    library(lubridate)
+    library(zoo)
+    library(scales)
+    library(purrr)
+    # readr is pulled in by tidyverse, but we qualify it below for safety
   })
   
-  # ----------------- window: 30 days from July 8 -----------------
+  # ----------------- window -----------------
   day_start  <- 0
   day_end    <- 24
   span_start <- as.Date("2025-07-08")
@@ -1485,11 +1492,14 @@ ggplot() +
   span_end   <- span_start + days(span_days - 1)
   
   # ----------------- insect counts -----------------
+  stopifnot(exists("combined_all_sites"), "datetime" %in% names(combined_all_sites))
+  
   possible_insect_cols <- c("total_abundance","CountOfInsect","insect_count","Count")
   have_insect <- intersect(possible_insect_cols, names(combined_all_sites))
   
   if (length(have_insect) == 1) {
-    combined_counts <- combined_all_sites %>% mutate(insect_raw = .data[[have_insect]])
+    combined_counts <- combined_all_sites %>%
+      dplyr::mutate(insect_raw = .data[[have_insect]])
   } else {
     exclude_cols <- c("source_file","motionEvent","filename","site","date","time_str",
                       "hour","minute","second","datetime")
@@ -1497,49 +1507,61 @@ ggplot() +
     taxa_cols <- setdiff(num_cols, intersect(num_cols, exclude_cols))
     stopifnot(length(taxa_cols) > 0)
     combined_counts <- combined_all_sites %>%
-      mutate(insect_raw = rowSums(across(all_of(taxa_cols)), na.rm = TRUE))
+      dplyr::mutate(insect_raw = rowSums(dplyr::across(dplyr::all_of(taxa_cols)), na.rm = TRUE))
   }
   
   counts_hr_raw <- combined_counts %>%
-    mutate(hour_bin = floor_date(datetime, "hour")) %>%
-    group_by(hour_bin) %>%
-    summarise(insect_count = sum(insect_raw, na.rm = TRUE), .groups = "drop")
+    dplyr::filter(!(site == "Rock Springs A" & lubridate::as_date(datetime) == lubridate::ymd("2025-08-16"))) %>%
+    dplyr::mutate(hour_bin = lubridate::floor_date(datetime, "hour")) %>%
+    dplyr::group_by(hour_bin) %>%
+    dplyr::summarise(insect_count = sum(insect_raw, na.rm = TRUE), .groups = "drop")
+  
   
   grid_hours <- tibble(
-    hour_bin = seq(as_datetime(span_start) + hours(day_start),
-                   as_datetime(span_end)   + days(1) + hours(0), # include last day to 24:00
-                   by = "1 hour")
-  ) %>% filter(hour(hour_bin) >= day_start, hour(hour_bin) < day_end)
+    hour_bin = seq(
+      as_datetime(span_start) + hours(day_start),
+      as_datetime(span_end)   + days(1) + hours(0),  # include last day to 24:00
+      by = "1 hour"
+    )
+  ) %>%
+    dplyr::filter(lubridate::hour(hour_bin) >= day_start, lubridate::hour(hour_bin) < day_end)
   
   counts_hr <- grid_hours %>%
-    left_join(counts_hr_raw, by = "hour_bin") %>%
-    mutate(insect_count = replace_na(insect_count, 0))
+    dplyr::left_join(counts_hr_raw, by = "hour_bin") %>%
+    dplyr::mutate(insect_count = replace_na(insect_count, 0))
   
   # ----------------- weather (continuous span grid + interpolation) -----------------
+  stopifnot(exists("weather_data"))
+  
   wx_raw <- weather_data %>%
-    filter(datetime >= as_datetime(span_start),
-           datetime <  as_datetime(span_end) + days(1)) %>%
-    transmute(
+    dplyr::filter(
+      datetime >= as_datetime(span_start),
+      datetime <  as_datetime(span_end) + days(1)
+    ) %>%
+    dplyr::transmute(
       datetime = as_datetime(datetime),
       temp     = readr::parse_number(as.character(air_temp)),
       humidity = readr::parse_number(as.character(humidity)),
       solar    = readr::parse_number(as.character(solar))
     ) %>%
-    arrange(datetime)
+    dplyr::arrange(datetime)
   
-  tz_str <- tz(wx_raw$datetime[1]); if (is.na(tz_str) || tz_str == "") tz_str <- "UTC"
+  stopifnot(nrow(wx_raw) > 0)
+  tz_str <- lubridate::tz(wx_raw$datetime[1]); if (is.na(tz_str) || tz_str == "") tz_str <- "UTC"
   
-  # minute grid: start 00:00 on span_start to 00:00 after span_end (i.e., includes 24:00 of last day)
+  # minute grid: start 00:00 on span_start to 00:00 after span_end
   grid_all <- tibble(
-    datetime = seq(as.POSIXct(span_start, tz = tz_str),
-                   as.POSIXct(span_end + days(1), tz = tz_str),
-                   by = "1 min")
+    datetime = seq(
+      as.POSIXct(span_start, tz = tz_str),
+      as.POSIXct(span_end + days(1), tz = tz_str),
+      by = "1 min"
+    )
   )
   
   wx_min <- wx_raw %>%
-    mutate(datetime = floor_date(datetime, "minute")) %>%
-    group_by(datetime) %>%
-    summarise(
+    dplyr::mutate(datetime = lubridate::floor_date(datetime, "minute")) %>%
+    dplyr::group_by(datetime) %>%
+    dplyr::summarise(
       temp     = mean(temp, na.rm = TRUE),
       humidity = mean(humidity, na.rm = TRUE),
       solar    = mean(solar, na.rm = TRUE),
@@ -1552,65 +1574,70 @@ ggplot() +
   }
   
   wx_filled <- grid_all %>%
-    left_join(wx_min, by = "datetime") %>%
-    arrange(datetime) %>%
-    mutate(
+    dplyr::left_join(wx_min, by = "datetime") %>%
+    dplyr::arrange(datetime) %>%
+    dplyr::mutate(
       tnum     = as.numeric(datetime),
       temp     = interp(temp,     tnum, max_gap_minutes = Inf),
       humidity = interp(humidity, tnum, max_gap_minutes = Inf),
-      solar    = interp(solar,    tnum, max_gap_minutes = Inf)
+      solar    = interp(solar,    tnum, max_gap_minutes = Inf),
+      day      = as_date(datetime)
     ) %>%
-    mutate(day = as_date(datetime)) %>%
-    select(-tnum)
+    dplyr::select(-tnum)
+  
+
   
   # ----------------- scale weather per day to insect axis -----------------
   ymax <- max(counts_hr$insect_count, na.rm = TRUE); if (!is.finite(ymax) || ymax == 0) ymax <- 1
   
-  # per-series dampening (adjust to taste)
+  # per-series dampening
   amp <- c(temp = 0.20, humidity = 0.15, solar = 0.15)
   
   per_day_scale <- function(x, target) {
     lo <- suppressWarnings(min(x, na.rm = TRUE))
     hi <- suppressWarnings(max(x, na.rm = TRUE))
-    if (!is.finite(lo) || !is.finite(hi) || hi <= lo) return(rep(target * 0.5, length(x)))
+    if (!is.finite(lo) || !is.finite(hi) || hi <= lo) return(rep(0, length(x)))
     target * (x - lo) / (hi - lo)
   }
   
   wx_scaled <- wx_filled %>%
-    group_by(day) %>%
-    mutate(
+    dplyr::group_by(day) %>%
+    dplyr::mutate(
       temp_s  = per_day_scale(temp,     ymax * amp["temp"]),
       hum_s   = per_day_scale(humidity, ymax * amp["humidity"]),
       solar_s = per_day_scale(solar,    ymax * amp["solar"])
     ) %>%
-    ungroup()
+    dplyr::ungroup()
   
   wx_long <- wx_scaled %>%
-    select(datetime, day, temp_s, hum_s, solar_s) %>%
-    pivot_longer(-c(datetime, day), names_to = "series", values_to = "y") %>%
-    mutate(series = recode(series,
-                           temp_s  = "Temperature",
-                           hum_s   = "Humidity",
-                           solar_s = "Solar")) %>%
-    arrange(series, datetime) %>%
-    filter(is.finite(y))
+    dplyr::select(datetime, day, temp_s, hum_s, solar_s) %>%
+    tidyr::pivot_longer(cols = c(temp_s, hum_s, solar_s),
+                        names_to = "series", values_to = "y") %>%
+    dplyr::mutate(series = dplyr::recode(series,
+                                         temp_s  = "Temperature",
+                                         hum_s   = "Humidity",
+                                         solar_s = "Solar")) %>%
+    dplyr::arrange(series, datetime) %>%
+    dplyr::filter(is.finite(y))
   
   # ----------------- day labels & noon lines -----------------
   days_seq <- seq.Date(span_start, span_end, by = "day")
   days_tbl <- tibble(day = days_seq) %>%
-    mutate(label_x = as_datetime(day) + hours(12),
-           label   = format(day, "%m-%d"))
-  noon_df  <- days_tbl %>% transmute(noon = as_datetime(day) + hours(12))
+    dplyr::mutate(
+      label_x = as_datetime(day) + hours(12),
+      label   = format(day, "%m-%d")
+    )
+  noon_df  <- days_tbl %>% dplyr::transmute(noon = as_datetime(day) + hours(12))
   
-  # Optional: thin labels to every 2nd or 3rd day to reduce clutter
+  # Optional: thin labels to every 2nd day
   label_every <- 2
-  days_tbl_lab <- days_tbl %>% filter(row_number() %% label_every == 1)
+  days_tbl_lab <- days_tbl %>% dplyr::filter(dplyr::row_number() %% label_every == 1)
   
   # ----------------- colors -----------------
-  bar_col    <- rgb(130,130,135, maxColorValue = 255)  # darker bars
-  temp_col   <- rgb(221,110, 96, maxColorValue = 255)  # red
-  hum_col    <- rgb(153,120,190, maxColorValue = 255)  # purple
-  solar_col  <- rgb(231,206,143, maxColorValue = 255)  # yellow
+  bar_col    <- rgb(130,130,135, maxColorValue = 255)
+  temp_col   <- rgb(221,110, 96, maxColorValue = 255)
+  hum_col    <- rgb(153,120,190, maxColorValue = 255)
+  solar_col  <- rgb(231,206,143, maxColorValue = 255)
   pal <- c("Temperature" = temp_col, "Humidity" = hum_col, "Solar" = solar_col)
   
   # ----------------- plot -----------------
@@ -1624,12 +1651,12 @@ ggplot() +
               size = 3, vjust = 1) +
     coord_cartesian(ylim = c(-0.08 * ymax, 1.05 * ymax), clip = "off") +
     scale_x_datetime(expand = expansion(mult = c(0, 0))) +
-    scale_color_manual(values = pal, name = "Weather") +
+    scale_color_manual(values = pal, name = "Weather (scaled)") +
     labs(
       x = NULL, y = "Insect Count",
       title = paste0("Hourly insect counts with weather | ",
                      format(span_start, "%Y-%m-%d"), " to ", format(span_end, "%Y-%m-%d")),
-      subtitle = "30-day window; insect hours filled to zero. Weather lines interpolated on a single span and scaled per day.",
+      subtitle = "Insect abundance binned hourly as grey bars",
       caption  = "Weather scaled per day to insect axis"
     ) +
     theme_minimal(base_size = 11) +
@@ -1638,9 +1665,9 @@ ggplot() +
       axis.text.x = element_blank(),
       axis.ticks.x = element_blank(),
       plot.margin = margin(10, 20, 35, 10),
-      legend.position = "left",                # << moved from "top" to left
+      legend.position = "left",
       legend.justification = "center",
-      legend.box.margin = margin(0, 12, 0, 0), # a little space between legend and plot
+      legend.box.margin = margin(0, 12, 0, 0),
       legend.title = element_text(size = 10),
       legend.text  = element_text(size = 9),
       legend.key.height = unit(0.8, "lines"),
@@ -1652,9 +1679,8 @@ ggplot() +
   
   ggsave("insects_weather_30d.pdf", p,
          width = 55, height = 6, units = "in",
-         device = cairo_pdf, dpi = 300, bg = "white", limitsize = FALSE)
+         device = "pdf", dpi = 300, bg = "white", limitsize = FALSE)
   
-
 #### Bunch Weather and Order Graph ####
   # --- Libraries ---
   library(tidyverse)
@@ -1761,7 +1787,6 @@ ggplot() +
     mutate(ymin = 0, ymax = 0.10 * ymax_counts)
   
   # ===================== Weather (raw points only, no interpolation, no grid join) =====================
-  # Aggregate to hourly, filter to week, keep only observed timestamps so lines connect across actual points.
   wx_all <- combined_with_weather %>%
     dt_coalesce() %>%
     filter(!is.na(datetime_any)) %>%
@@ -1776,7 +1801,6 @@ ggplot() +
     ) %>%
     arrange(datetime)
   
-  # scale to temperature range using observed maxima within the window
   max_temp <- max(wx_all$air_temp, na.rm = TRUE); if (!is.finite(max_temp)) max_temp <- 1
   smax <- max(wx_all$solar, na.rm = TRUE); solar_scale <- if (is.finite(smax) && smax > 0) max_temp / smax else 1
   hmax <- max(wx_all$humidity, na.rm = TRUE); hum_scale <- if (is.finite(hmax) && hmax > 0) max_temp / hmax else 1
@@ -1807,22 +1831,23 @@ ggplot() +
       title = paste0("All sites combined  |  Week starting ", format(week_start, "%Y-%m-%d")),
       y = "Insect Number"
     ) +
-    theme_minimal(base_size = 12) +
+    theme_minimal(base_size = 18) +  # 50% larger than 12
     theme(
       legend.position = "left",
       panel.grid.minor = element_blank(),
-      plot.title = element_text(face = "bold", size = 13)
+      plot.title = element_text(face = "bold", size = 20),  # was ~13, now ~19.5→20
+      axis.title = element_text(size = 18),
+      axis.text  = element_text(size = 16),
+      legend.title = element_text(size = 18),
+      legend.text  = element_text(size = 16)
     )
   
   p_bottom <- ggplot(wx_plot, aes(x = datetime)) +
-    geom_line(aes(y = air_temp,  color = "Temperature (°C)"), linewidth = 0.9, na.rm = TRUE) +
-    geom_point(aes(y = air_temp,  color = "Temperature (°C)"), size = 0.8, na.rm = TRUE) +
+    geom_line(aes(y = air_temp,  color = "Temperature (°F)"), linewidth = 0.9, na.rm = TRUE) +
     geom_line(aes(y = solar_plot, color = "Solar (scaled)"),   linewidth = 0.85, na.rm = TRUE) +
-    geom_point(aes(y = solar_plot, color = "Solar (scaled)"),  size = 0.7, na.rm = TRUE) +
     geom_line(aes(y = hum_plot,   color = "Humidity (scaled)"),linewidth = 0.85, na.rm = TRUE) +
-    geom_point(aes(y = hum_plot,  color = "Humidity (scaled)"),size = 0.7, na.rm = TRUE) +
     scale_color_manual(
-      values = c("Temperature (°C)" = "#DC2626",
+      values = c("Temperature (°F)" = "#DC2626",
                  "Solar (scaled)"   = "#EAB308",
                  "Humidity (scaled)" = "#22D3EE"),
       name = NULL
@@ -1830,18 +1855,459 @@ ggplot() +
     scale_y_continuous(name = "Weather Metrics") +
     coord_cartesian(xlim = c(week_start, week_end)) +
     scale_x_datetime(NULL, breaks = pretty_breaks(n = 14), date_labels = "%b %d\n%H:%M", expand = c(0, 0)) +
-    theme_minimal(base_size = 12) +
+    theme_minimal(base_size = 18) +  # 50% larger than 12
     theme(
       legend.position = "left",
-      panel.grid.minor = element_blank()
+      panel.grid.minor = element_blank(),
+      axis.title = element_text(size = 18),
+      axis.text  = element_text(size = 16),
+      legend.title = element_text(size = 18),
+      legend.text  = element_text(size = 16)
     )
   
   final_plot <- p_top / p_bottom + plot_layout(heights = c(2, 1))
   
   ggsave(
-    filename = paste0("insect_weather_week_", format(week_start, "%Y-%m-%d"), "_ALL.png"),
+    filename = paste0("insect_weather_week_", format(week_start, "%Y-%m-%d"), "_ALL.pdf"),
     plot = final_plot,
     width = 36, height = 10, units = "in", dpi = 300,
     bg = "white", limitsize = FALSE
+  )
+  s
+#### Rain Days ####
+  library(tidyverse)
+  library(lubridate)
+  
+  # Summarize to daily rainfall
+  rain_days <- weather_data %>%
+    mutate(date = as_date(datetime)) %>%
+    group_by(date) %>%
+    summarise(total_rain = sum(rain, na.rm = TRUE)) %>%
+    ungroup()
+  
+  # Make a bar chart showing rain days
+  ggplot(rain_days, aes(x = date, y = total_rain)) +
+    geom_col(fill = "#3B82F6") +
+    labs(
+      title = "Daily Rainfall",
+      x = "Date",
+      y = "Total Rainfall (mm)"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(
+      axis.text.x = element_text(angle = 45, hjust = 1)
+    )
+  
+  library(tidyverse)
+  library(lubridate)
+  
+  daytime_rain_events <- weather_data %>%
+    mutate(
+      hour = floor_date(datetime, "hour"),
+      hour_num = hour(datetime),
+      date = as_date(datetime)
+    ) %>%
+    filter(date > as_date("2025-07-07"),        # only after July 7 2025
+           hour_num >= 7, hour_num <= 19) %>%   # daytime hours
+    group_by(date, hour) %>%
+    summarise(total_rain = sum(rain, na.rm = TRUE), .groups = "drop") %>%
+    filter(total_rain > 0) %>%
+    arrange(date, hour)
+  
+  # Insect orders vs rainfall for two windows:
+  #   1) Centered on 2025-07-08 (±1 day)
+  #   2) Centered on 2025-08-14 (±1 day)
+  
+  library(tidyverse)
+  library(lubridate)
+  library(patchwork)
+  library(scales)
+  
+  # Colors for orders
+  taxa_cols_wanted <- c("Diptera","Hymenoptera","Lepidoptera","Coleoptera")
+  taxa_pal <- c(Diptera="#3B82F6", Hymenoptera="#EF4444",
+                Lepidoptera="#22C55E", Coleoptera="#E879F9")
+  
+  # Helper to coalesce datetime column name
+  dt_coalesce <- function(df) {
+    cands <- intersect(names(df), c("datetime","datetime_rounded","datetime.x","datetime.y"))
+    if (length(cands) == 0) stop("No datetime column found.")
+    mutate(df, datetime_any = coalesce(!!!syms(cands)))
+  }
+  
+  # Build combined_with_weather if missing
+  if (!exists("combined_with_weather")) {
+    combined_all_sites_rounded <- combined_all_sites %>%
+      mutate(datetime_rounded = round_date(datetime, unit = "1 hours"))
+    weather_data_rounded <- weather_data %>%
+      mutate(datetime_rounded = round_date(datetime, unit = "1 minutes"))
+    combined_with_weather <- combined_all_sites_rounded %>%
+      left_join(weather_data_rounded, by = "datetime_rounded")
+  }
+  
+  taxa_cols <- intersect(taxa_cols_wanted, names(combined_with_weather))
+  
+  plot_window <- function(center_date, save_file = NULL) {
+    # Window: one full day before and after
+    center_dt <- as_datetime(paste0(center_date, " 12:00:00"))
+    win_start <- floor_date(center_dt - days(1), "day")
+    win_end   <- ceiling_date(center_dt + days(1), "day") - seconds(1)
+    
+    # Aggregate hourly insect orders
+    orders_hour <- combined_with_weather %>%
+      dt_coalesce() %>%
+      filter(datetime_any >= win_start, datetime_any <= win_end) %>%
+      mutate(hour = floor_date(datetime_any, "hour")) %>%
+      group_by(hour) %>%
+      summarise(across(all_of(taxa_cols), ~ sum(.x, na.rm = TRUE)), .groups = "drop") %>%
+      pivot_longer(all_of(taxa_cols), names_to = "order", values_to = "count") %>%
+      mutate(order = factor(order, levels = taxa_cols_wanted[taxa_cols_wanted %in% taxa_cols]))
+    
+    # Aggregate hourly rainfall
+    rain_hour <- weather_data %>%
+      filter(datetime >= win_start, datetime <= win_end) %>%
+      mutate(hour = floor_date(datetime, "hour")) %>%
+      group_by(hour) %>%
+      summarise(rain = sum(rain, na.rm = TRUE), .groups = "drop")
+    
+    # Top panel
+    p_top <- ggplot(orders_hour, aes(x = hour, y = count, fill = order)) +
+      geom_col(width = 3600, color = NA) +
+      scale_fill_manual(values = taxa_pal, name = NULL) +
+      labs(
+        title = paste0("Insect orders and rainfall  |  ", format(win_start, "%Y-%m-%d"),
+                       " to ", format(win_end, "%Y-%m-%d")),
+        x = NULL, y = "Hourly insect counts (stacked)"
+      ) +
+      scale_x_datetime(
+        breaks = pretty_breaks(n = 12),
+        labels = function(x) format(x, "%b %d\n%H:%M"),
+        expand = expansion(mult = c(0, 0))
+      ) +
+      theme_minimal(base_size = 15) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1),
+            panel.grid.minor = element_blank())
+    
+    # Bottom panel
+    p_bottom <- ggplot(rain_hour, aes(x = hour, y = rain)) +
+      geom_col(fill = "#3B82F6", width = 3600) +
+      labs(x = "Time", y = "Hourly rainfall") +
+      scale_x_datetime(
+        breaks = pretty_breaks(n = 12),
+        labels = function(x) format(x, "%b %d\n%H:%M"),
+        expand = expansion(mult = c(0, 0))
+      ) +
+      theme_minimal(base_size = 15) +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1),
+            panel.grid.minor = element_blank())
+    
+    out <- p_top / p_bottom + plot_layout(heights = c(2, 1))
+    
+    if (!is.null(save_file)) {
+      ggsave(save_file, out, width = 14, height = 8, dpi = 300, bg = "white")
+    }
+    out
+  }
+  
+  # Plot for 2025-07-08 ±1 day
+  plot_0708 <- plot_window("2025-07-08", save_file = "insect_orders_rain_2025-07-08_pm1d.png")
+  print(plot_0708)
+  
+  # Plot for 2025-08-14 ±1 day
+  plot_0814 <- plot_window("2025-08-14", save_file = "insect_orders_rain_2025-08-14_pm1d.png")
+  print(plot_0814)
+  
+  # Plot for 2025-07-16 ±1 day
+  plot_0716 <- plot_window("2025-07-16", save_file = "insect_orders_rain_2025-07-16_pm1d.png")
+  print(plot_0716)
+  
+  
+#### Temp anomoly ####
+  #### Total abundance across all sites - month-mean temperature anomaly (Jul and Aug) 
+  # Build hourly totals across all sites, compute anomaly relative to the MONTH mean
+  # (not site-centered), fit month-specific GAM smooths, and plot on a linear y-scale.
+  
+  library(tidyverse)
+  library(lubridate)
+  library(mgcv)
+  
+  # 0) Ensure total_abundance exists
+  if (!"total_abundance" %in% names(combined_with_weather)) {
+    insect_cols <- intersect(
+      c("Diptera","Hymenoptera","Lepidoptera","Coleoptera"),
+      names(combined_with_weather)
+    )
+    stopifnot(length(insect_cols) > 0)
+    combined_with_weather <- combined_with_weather %>%
+      mutate(total_abundance = rowSums(across(all_of(insect_cols)), na.rm = TRUE))
+  }
+  
+  # 1) Hourly totals across ALL sites, and month label
+  hourly_all <- combined_with_weather %>%
+    mutate(
+      date  = as_date(datetime_rounded),
+      month = month(date, label = TRUE, abbr = TRUE),
+      hour  = floor_date(datetime_rounded, "hour")
+    ) %>%
+    filter(month %in% c("Jul","Aug")) %>%
+    group_by(month, hour) %>%
+    summarise(
+      insects = sum(total_abundance, na.rm = TRUE),
+      temp    = mean(air_temp, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    filter(is.finite(insects), is.finite(temp))
+  
+  # 2) Month-mean anomaly (single reference per month across all sites)
+  ref_month <- hourly_all %>%
+    group_by(month) %>%
+    summarise(tbar = mean(temp, na.rm = TRUE), .groups = "drop")
+  
+  hourly_anom <- hourly_all %>%
+    left_join(ref_month, by = "month") %>%
+    mutate(temp_anom = temp - tbar)
+  
+  # 3) Trim extreme anomalies within each month to reduce leverage of rare spikes
+  trimmed <- hourly_anom %>%
+    group_by(month) %>%
+    mutate(
+      lo = quantile(temp_anom, 0.05, na.rm = TRUE),
+      hi = quantile(temp_anom, 0.95, na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    filter(temp_anom >= lo, temp_anom <= hi) %>%
+    select(-lo, -hi)
+  
+  # 4) Fit month-specific smooth GAM on all sites combined (linear y-scale)
+  trimmed$month <- droplevels(trimmed$month)
+  gam_total_month <- gam(
+    insects ~ month + s(temp_anom, by = month, k = 5),
+    data   = trimmed,
+    family = quasipoisson(link = "log"),
+    method = "REML",
+    select = TRUE
+  )
+  print(summary(gam_total_month))
+  
+  # 5) Build prediction ribbons per month
+  pred_grid <- trimmed %>%
+    group_by(month) %>%
+    summarise(
+      lo = min(temp_anom, na.rm = TRUE),
+      hi = max(temp_anom, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    rowwise() %>%
+    mutate(temp_seq = list(seq(lo, hi, length.out = 150))) %>%
+    unnest(temp_seq) %>%
+    transmute(month, temp_anom = temp_seq)
+  
+  pred_link <- predict(gam_total_month, newdata = pred_grid, type = "link", se.fit = TRUE)
+  pred_df <- pred_grid %>%
+    mutate(
+      fit_link = pred_link$fit,
+      se_link  = pred_link$se.fit,
+      fit      = exp(fit_link),
+      lo       = exp(fit_link - 1.96 * se_link),
+      hi       = exp(fit_link + 1.96 * se_link)
+    )
+  
+  # 6) Plot (linear y-scale)
+  pal <- c(Jul = "#F97316", Aug = "#10B981")
+  
+  p_total <- ggplot() +
+    geom_point(
+      data = trimmed,
+      aes(x = temp_anom, y = insects, color = month),
+      size = 0.8, alpha = 0.35
+    ) +
+    geom_ribbon(
+      data = pred_df,
+      aes(x = temp_anom, ymin = lo, ymax = hi, fill = month),
+      alpha = 0.25, color = NA
+    ) +
+    geom_line(
+      data = pred_df,
+      aes(x = temp_anom, y = fit, color = month),
+      linewidth = 1
+    ) +
+    facet_wrap(~month, scales = "free_y") +
+    scale_color_manual(values = pal, guide = guide_legend(title = "Month")) +
+    scale_fill_manual(values = pal, guide = "none") +
+    labs(
+      title = "Hourly insect counts vs temperature anomaly by month",
+      subtitle = "All sites combined. Anomaly is temperature minus the month mean across all sites",
+      x = "Temperature anomaly (°C)",
+      y = "Insects per hour - total across sites"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(panel.grid.minor = element_blank())
+  print(p_total)
+  
+  # 7) Quick slope check near zero anomaly per month
+  check_df <- tibble(
+    month = factor(c("Jul","Aug"), levels = levels(trimmed$month))
+  ) %>%
+    mutate(
+      y_dn = predict(gam_total_month,
+                     newdata = data.frame(month = month, temp_anom = -0.5),
+                     type = "response"),
+      y_up = predict(gam_total_month,
+                     newdata = data.frame(month = month, temp_anom =  0.5),
+                     type = "response"),
+      slope_sign = sign(y_up - y_dn)
+    )
+  print(check_df)
+   
+  
+#### New GAMs ####
+  # Giant panel of GAM effects for all orders, months, and predictors
+  # Rows = orders (Diptera, Hymenoptera, Lepidoptera, Coleoptera)
+  # Columns = Jul: air, solar, humidity | Aug: air, solar, humidity  (6 columns total)
+  # Each panel shows predicted count vs one predictor, holding the other two at their medians
+  
+  library(tidyverse)
+  library(lubridate)
+  library(mgcv)
+  library(patchwork)
+  
+  # 1) Target orders
+  orders <- c("Diptera","Hymenoptera","Lepidoptera","Coleoptera")
+  orders <- intersect(orders, names(combined_with_weather))
+  stopifnot(length(orders) > 0)
+  
+  # 2) Prepare hourly base
+  cw_hr <- combined_with_weather %>%
+    mutate(
+      date  = as_date(datetime_rounded),
+      month = month(date, label = TRUE, abbr = TRUE),
+      hour  = floor_date(datetime_rounded, "hour")
+    ) %>%
+    filter(month %in% c("Jul","Aug"))
+  
+  # 3) Helper: assemble hourly per order per month across all sites
+  make_data_order_month <- function(ord, month_lab) {
+    cw_hr %>%
+      filter(month == month_lab) %>%
+      group_by(site, hour) %>%
+      summarise(
+        resp     = sum(.data[[ord]], na.rm = TRUE),
+        air_temp = mean(air_temp, na.rm = TRUE),
+        solar    = mean(solar,    na.rm = TRUE),
+        humidity = mean(humidity, na.rm = TRUE),
+        .groups  = "drop"
+      ) %>%
+      filter(is.finite(resp), is.finite(air_temp), is.finite(solar), is.finite(humidity)) %>%
+      mutate(site = factor(site))
+  }
+  
+  # 4) Fit GAM for a given order and month
+  fit_gam_order_month <- function(ord, month_lab) {
+    df <- make_data_order_month(ord, month_lab)
+    if (nrow(df) < 10) warning(paste("Very few rows for", ord, month_lab))
+    gam(
+      resp ~ s(air_temp, k = 5) + s(solar, k = 5) + s(humidity, k = 5) + s(site, bs = "re"),
+      data   = df,
+      family = poisson(link = "log"),
+      method = "REML",
+      select = TRUE
+    )
+  }
+  
+  # 5) Plot a single-variable effect while holding the others at medians
+  plot_effect <- function(model_obj, df_ref, var, ord, month_lab) {
+    stopifnot(var %in% c("air_temp","solar","humidity"))
+    med_air <- median(df_ref$air_temp, na.rm = TRUE)
+    med_sol <- median(df_ref$solar,    na.rm = TRUE)
+    med_hum <- median(df_ref$humidity, na.rm = TRUE)
+    ref_site <- levels(df_ref$site)[1]
+    
+    grid <- tibble(
+      air_temp = if (var == "air_temp") seq(min(df_ref$air_temp, na.rm = TRUE),
+                                            max(df_ref$air_temp, na.rm = TRUE), length.out = 140) else med_air,
+      solar    = if (var == "solar") seq(min(df_ref$solar, na.rm = TRUE),
+                                         max(df_ref$solar, na.rm = TRUE), length.out = 140) else med_sol,
+      humidity = if (var == "humidity") seq(min(df_ref$humidity, na.rm = TRUE),
+                                            max(df_ref$humidity, na.rm = TRUE), length.out = 140) else med_hum,
+      site     = factor(ref_site, levels = levels(df_ref$site))
+    )
+    
+    pr <- predict(model_obj, newdata = grid, type = "link", se.fit = TRUE)
+    
+    df_plot <- grid %>%
+      mutate(
+        fit = exp(pr$fit),
+        lo  = exp(pr$fit - 1.96 * pr$se.fit),
+        hi  = exp(pr$fit + 1.96 * pr$se.fit),
+        x   = .data[[var]]
+      )
+    
+    pretty_var <- recode(var,
+                         air_temp = "Air temperature",
+                         solar = "Solar",
+                         humidity = "Humidity")
+    
+    ggplot(df_plot, aes(x = x, y = fit)) +
+      geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.18) +
+      geom_line(linewidth = 0.9) +
+      labs(
+        title = ord,
+        subtitle = paste(month_lab, pretty_var),
+        x = pretty_var,
+        y = "Predicted count"
+      ) +
+      theme_minimal(base_size = 11) +
+      theme(
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 12),
+        plot.subtitle = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.text = element_text(size = 9)
+      )
+  }
+  
+  # 6) Fit models and build all panels
+  months_vec <- c("Jul","Aug")
+  vars_vec   <- c("air_temp","solar","humidity")
+  
+  # Store plots in row order by order, and column order by month then variable
+  plots_all <- list()
+  
+  for (ord in orders) {
+    # Fit once per month
+    df_jul <- make_data_order_month(ord, "Jul")
+    df_aug <- make_data_order_month(ord, "Aug")
+    mod_jul <- fit_gam_order_month(ord, "Jul")
+    mod_aug <- fit_gam_order_month(ord, "Aug")
+    
+    # Jul: air, solar, humidity
+    for (v in vars_vec) {
+      plots_all[[length(plots_all) + 1]] <- plot_effect(mod_jul, df_jul, v, ord, "July")
+    }
+    # Aug: air, solar, humidity
+    for (v in vars_vec) {
+      plots_all[[length(plots_all) + 1]] <- plot_effect(mod_aug, df_aug, v, ord, "August")
+    }
+  }
+  
+  # 7) Combine into a big panel: 4 orders x 6 columns (Jul 3 + Aug 3)
+  panel <- wrap_plots(plots_all, ncol = 6, guides = "collect") +
+    plot_annotation(
+      title = "GAM responses of hourly insect counts by order",
+      subtitle = "Columns within month: Air temperature, Solar, Humidity. Left block is July, right block is August. Lines are predicted means with 95% ribbons.",
+      theme = theme(
+        plot.title = element_text(face = "bold", size = 16),
+        plot.subtitle = element_text(size = 12)
+      )
+    )
+  
+  # 8) Show and save
+  print(panel)
+  
+  ggsave(
+    filename = "GAM_panel_orders_JulAug_6cols.png",
+    plot = panel,
+    width = 24, height = 14, units = "in", dpi = 300, bg = "white"
   )
   
