@@ -677,6 +677,31 @@ p_four_orders_smooth <- ggplot(df_hour, aes(x = hour, y = n_pos, color = Order, 
 
 p_four_orders_smooth
 
+#### New Diel Activity ####
+# reorder legend to: Diptera, Hymenoptera, Lepidoptera, Coleoptera
+df_hour$Order <- factor(df_hour$Order,
+                        levels = c("Diptera", "Hymenoptera", "Lepidoptera", "Coleoptera"))
+
+p_diel_single <- ggplot(df_hour, aes(x = hour, y = n_pos, color = Order, group = Order)) +
+  annotate("rect", xmin = 7, xmax = 19, ymin = -Inf, ymax = Inf,
+           fill = "grey92", alpha = 0.5) +
+  geom_line(linewidth = 1) +
+  geom_point(aes(shape = Order), alpha = 0.35, size = 2, stroke = 0) +
+  scale_color_manual(values = pal) +
+  scale_shape_discrete(guide = "none") +
+  scale_x_continuous(breaks = x_breaks, minor_breaks = x_minor, limits = c(0, 24)) +
+  scale_y_continuous(expand = expansion(mult = c(0, 0.08))) +
+  labs(
+    title = "Diel activity by insect order",
+    subtitle = "Shaded region highlights 7 am to 7 pm",
+    x = "Hour of day",
+    y = "Positive detections per hour"
+  ) +
+  coord_cartesian(clip = "off") +
+  theme_polished
+
+p_diel_single
+
 #### Analysis ####
 library(MASS)
 library(MASS)
@@ -2022,7 +2047,7 @@ ggplot() +
   print(plot_0716)
   
   
-#### Temp anomoly ####
+#### Temp anomaly ####
   #### Total abundance across all sites - month-mean temperature anomaly (Jul and Aug) 
   # Build hourly totals across all sites, compute anomaly relative to the MONTH mean
   # (not site-centered), fit month-specific GAM smooths, and plot on a linear y-scale.
@@ -2311,3 +2336,657 @@ ggplot() +
     width = 24, height = 14, units = "in", dpi = 300, bg = "white"
   )
   
+#### Daily averages (weather) and total insects (automatic datetime detection) ####
+  
+  library(tidyverse)
+  library(lubridate)
+  
+  span_start <- as.Date("2025-07-15")
+  span_end   <- as.Date("2025-07-17")
+  
+  # --- Daily weather means ---
+  wx_daily <- weather_data %>%
+    mutate(date = as_date(datetime)) %>%
+    filter(date >= span_start, date <= span_end) %>%
+    group_by(date) %>%
+    summarise(
+      air_temp_mean = mean(air_temp, na.rm = TRUE),
+      humidity_mean = mean(humidity, na.rm = TRUE),
+ #     solar_mean    = mean(solar, na.rm = TRUE),
+      rain_total    = sum(rain, na.rm = TRUE),
+      .groups = "drop"
+    )
+  
+  # --- Detect datetime column in insect dataset ---
+  dt_col <- intersect(c("datetime", "datetime_rounded", "datetime.x"), names(combined_all_sites))
+  if (length(dt_col) == 0) stop("No datetime column found in combined_all_sites")
+  dt_col <- dt_col[1]  # use the first found
+  
+  # --- Daily insect totals ---
+  possible_orders <- c("Diptera","Hymenoptera","Lepidoptera","Coleoptera")
+  have_orders <- intersect(possible_orders, names(combined_all_sites))
+  
+  insects_daily <- combined_all_sites %>%
+    mutate(date = as_date(.data[[dt_col]])) %>%
+    filter(date >= span_start, date <= span_end) %>%
+    mutate(total_insects = rowSums(across(all_of(have_orders)), na.rm = TRUE)) %>%
+    group_by(date) %>%
+    summarise(total_insects = sum(total_insects, na.rm = TRUE), .groups = "drop")
+  
+  # --- Merge and show ---
+  daily_summary <- wx_daily %>%
+    left_join(insects_daily, by = "date") %>%
+    arrange(date)
+  
+  print(daily_summary)
+  
+#### Temp anomaly (Harner A + Harner C, DAYTIME ONLY 7am–7pm) ####
+  # Total hourly abundance across Harner A and Harner C, July–Aug (through Aug 20).
+  # Temperature anomaly is relative to the MONTH mean (across the two sites together).
+  # Linear y-scale; GAM with month-specific smooths. Temperature is in °F.
+  
+  suppressPackageStartupMessages({
+    library(tidyverse)
+    library(lubridate)
+    library(mgcv)
+  })
+  
+  # --- Helper to find a datetime column ---
+  dt_coalesce <- function(df) {
+    cands <- intersect(names(df), c("datetime_rounded","datetime","datetime.x","datetime.y"))
+    if (!length(cands)) stop("No datetime-like column found.")
+    df %>% mutate(datetime_any = coalesce(!!!rlang::syms(cands)))
+  }
+  
+  # 0) Ensure total_abundance exists (sum of focal orders)
+  if (!"total_abundance" %in% names(combined_with_weather)) {
+    insect_cols <- intersect(
+      c("Diptera","Hymenoptera","Lepidoptera","Coleoptera"),
+      names(combined_with_weather)
+    )
+    stopifnot(length(insect_cols) > 0)
+    combined_with_weather <- combined_with_weather %>%
+      mutate(total_abundance = rowSums(across(all_of(insect_cols)), na.rm = TRUE))
+  }
+  
+  # 1) Filter: sites Harner A & C, Jul/Aug (<= Aug 20), DAYTIME 7:00–18:59, make hourly data
+  hourly_harner <- combined_with_weather %>%
+    dt_coalesce() %>%
+    mutate(
+      datetime = as_datetime(datetime_any),
+      date     = as_date(datetime),
+      month    = month(date, label = TRUE, abbr = TRUE),
+      hour     = floor_date(datetime, "hour"),
+      hour_num = hour(datetime)
+    ) %>%
+    filter(site %in% c("Harner A","Harner C")) %>%
+    filter(month %in% c("Jul","Aug")) %>%
+    filter(!(month == "Aug" & date > ymd("2025-08-20"))) %>%
+    filter(hour_num >= 7 & hour_num < 19) %>%                  # daytime only
+    group_by(month, hour) %>%                                  # pool Harner A+C per hour
+    summarise(
+      insects = sum(total_abundance, na.rm = TRUE),
+      temp    = mean(air_temp, na.rm = TRUE),                  # °F in your data
+      .groups = "drop"
+    ) %>%
+    filter(is.finite(insects), is.finite(temp))
+  
+  # 2) Month-mean anomaly (single reference per month across Harner A+C)
+  ref_month <- hourly_harner %>%
+    group_by(month) %>%
+    summarise(tbar = mean(temp, na.rm = TRUE), .groups = "drop")
+  
+  hourly_anom <- hourly_harner %>%
+    left_join(ref_month, by = "month") %>%
+    mutate(temp_anom = temp - tbar)
+  
+  # 3) Trim extreme anomalies within each month (5th–95th percentiles)
+  trimmed <- hourly_anom %>%
+    group_by(month) %>%
+    mutate(
+      lo = quantile(temp_anom, 0.05, na.rm = TRUE),
+      hi = quantile(temp_anom, 0.95, na.rm = TRUE)
+    ) %>%
+    ungroup() %>%
+    filter(temp_anom >= lo, temp_anom <= hi) %>%
+    select(-lo, -hi)
+  
+  # 4) Fit month-specific smooths on linear scale (log link on mean; plotted on response)
+  trimmed$month <- droplevels(trimmed$month)
+  gam_total_month <- gam(
+    insects ~ month + s(temp_anom, by = month, k = 5),
+    data   = trimmed,
+    family = quasipoisson(link = "log"),
+    method = "REML",
+    select = TRUE
+  )
+  print(summary(gam_total_month))
+  
+  # 5) Predictions per month across observed anomaly ranges
+  pred_grid <- trimmed %>%
+    group_by(month) %>%
+    summarise(
+      lo = min(temp_anom, na.rm = TRUE),
+      hi = max(temp_anom, na.rm = TRUE),
+      .groups = "drop"
+    ) %>%
+    rowwise() %>%
+    mutate(temp_seq = list(seq(lo, hi, length.out = 150))) %>%
+    unnest(temp_seq) %>%
+    transmute(month, temp_anom = temp_seq)
+  
+  pred_link <- predict(gam_total_month, newdata = pred_grid, type = "link", se.fit = TRUE)
+  pred_df <- pred_grid %>%
+    mutate(
+      fit_link = pred_link$fit,
+      se_link  = pred_link$se.fit,
+      fit      = exp(fit_link),
+      lo       = exp(fit_link - 1.96 * se_link),
+      hi       = exp(fit_link + 1.96 * se_link)
+    )
+  
+  # 6) Plot
+  pal <- c(Jul = "#F97316", Aug = "#10B981")
+  
+  p_total <- ggplot() +
+    geom_point(
+      data = trimmed,
+      aes(x = temp_anom, y = insects, color = month),
+      size = 0.8, alpha = 0.35
+    ) +
+    geom_ribbon(
+      data = pred_df,
+      aes(x = temp_anom, ymin = lo, ymax = hi, fill = month),
+      alpha = 0.25, color = NA
+    ) +
+    geom_line(
+      data = pred_df,
+      aes(x = temp_anom, y = fit, color = month),
+      linewidth = 1
+    ) +
+    facet_wrap(~month, scales = "free_y") +
+    scale_color_manual(values = pal, guide = guide_legend(title = "Month")) +
+    scale_fill_manual(values = pal, guide = "none") +
+    labs(
+      title = "Hourly insect counts vs temperature anomaly by month (Harner A + C, daytime only)",
+      subtitle = "Anomaly = air temperature minus month mean across Harner A & C (7 AM–7 PM; Jul–Aug through Aug 20)",
+      x = "Temperature anomaly (°F)",
+      y = "Insects per hour (Harner A + C total)"
+    ) +
+    theme_minimal(base_size = 14) +
+    theme(panel.grid.minor = element_blank())
+  print(p_total)
+  
+  # 7) Quick slope check near zero anomaly per month
+  check_df <- tibble(
+    month = factor(c("Jul","Aug"), levels = levels(trimmed$month))
+  ) %>%
+    mutate(
+      y_dn = predict(gam_total_month,
+                     newdata = data.frame(month = month, temp_anom = -0.5),
+                     type = "response"),
+      y_up = predict(gam_total_month,
+                     newdata = data.frame(month = month, temp_anom =  0.5),
+                     type = "response"),
+      slope_sign = sign(y_up - y_dn)
+    )
+  print(check_df)
+  
+#### GAM panel: Air temperature (°F) + Time of Day (Daytime only, All Sites) ####
+  # Rows = orders (Diptera, Hymenoptera, Lepidoptera, Coleoptera)
+  # Columns = Jul: air temp, time of day | Aug: air temp, time of day
+  # Filters: All sites, Jul–Aug (through Aug 20), 7 AM–7 PM only
+  
+  suppressPackageStartupMessages({
+    library(tidyverse)
+    library(lubridate)
+    library(mgcv)
+    library(patchwork)
+  })
+  
+  # ---------- helpers ----------
+  dt_coalesce <- function(df) {
+    cands <- intersect(names(df), c("datetime","datetime_rounded","datetime.x","datetime.y"))
+    if (!length(cands)) stop("No datetime-like column found.")
+    df %>% mutate(datetime_any = coalesce(!!!rlang::syms(cands)))
+  }
+  
+  ensure_orders <- function(df) {
+    ords <- intersect(c("Diptera","Hymenoptera","Lepidoptera","Coleoptera"), names(df))
+    if (!length(ords)) stop("No Diptera, Hymenoptera, Lepidoptera, or Coleoptera columns found.")
+    ords
+  }
+  
+  fit_gam_air <- function(df) {
+    k_air <- min(7, max(3, n_distinct(df$air_temp) - 1))
+    gam(resp ~ s(air_temp, k = k_air) + s(site, bs = "re"),
+        data = df, family = nb(), method = "REML", select = TRUE)
+  }
+  
+  fit_gam_tod <- function(df) {
+    k_tod <- min(7, max(3, n_distinct(df$hour_of_day) - 1))
+    gam(resp ~ s(hour_of_day, k = k_tod) + s(site, bs = "re"),
+        data = df, family = nb(), method = "REML", select = TRUE)
+  }
+  
+  plot_effect <- function(model_obj, df_ref, var, ord, month_lab) {
+    stopifnot(var %in% c("air_temp","hour_of_day"))
+    ref_site <- levels(df_ref$site)[1]
+    
+    grid <- tibble(
+      air_temp    = if (var == "air_temp") seq(min(df_ref$air_temp, na.rm = TRUE),
+                                               max(df_ref$air_temp, na.rm = TRUE), length.out = 160)
+      else median(df_ref$air_temp, na.rm = TRUE),
+      hour_of_day = if (var == "hour_of_day") seq(min(df_ref$hour_of_day, na.rm = TRUE),
+                                                  max(df_ref$hour_of_day, na.rm = TRUE), length.out = 160)
+      else median(df_ref$hour_of_day, na.rm = TRUE),
+      site = factor(ref_site, levels = levels(df_ref$site))
+    )
+    
+    pr <- predict(model_obj, newdata = grid, type = "link", se.fit = TRUE)
+    df_plot <- grid %>%
+      mutate(fit = exp(pr$fit),
+             lo  = exp(pr$fit - 1.96 * pr$se.fit),
+             hi  = exp(pr$fit + 1.96 * pr$se.fit),
+             x   = .data[[var]])
+    
+    pretty_var <- recode(var,
+                         air_temp = "Air temperature (°F)",
+                         hour_of_day = "Hour of day")
+    
+    ggplot(df_plot, aes(x = x, y = fit)) +
+      geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.18, fill = "grey70") +
+      geom_line(linewidth = 0.9, color = "black") +
+      labs(
+        title = ord,
+        subtitle = paste(month_lab, pretty_var),
+        x = pretty_var,
+        y = "Predicted count"
+      ) +
+      theme_minimal(base_size = 11) +
+      theme(
+        panel.grid.minor = element_blank(),
+        plot.title = element_text(face = "bold", size = 12),
+        plot.subtitle = element_text(size = 10),
+        axis.title.x = element_text(size = 10),
+        axis.title.y = element_text(size = 10),
+        axis.text = element_text(size = 9)
+      )
+  }
+  
+  # ---------- data prep ----------
+  stopifnot(exists("combined_with_weather"))
+  orders <- ensure_orders(combined_with_weather)
+  
+  cw_hr <- combined_with_weather %>%
+    dt_coalesce() %>%
+    mutate(
+      datetime = as_datetime(datetime_any),
+      date     = as_date(datetime),
+      month    = month(date, label = TRUE, abbr = TRUE),
+      hour_num = hour(datetime),
+      hour     = floor_date(datetime, "hour")
+    ) %>%
+    filter(month %in% c("Jul","Aug")) %>%
+    filter(!(month == "Aug" & date > ymd("2025-08-20"))) %>%
+    filter(hour_num >= 7 & hour_num < 19)   # daytime only
+  
+  make_data_order_month <- function(ord, month_lab) {
+    cw_hr %>%
+      filter(month == month_lab) %>%
+      group_by(site, hour) %>%
+      summarise(
+        resp        = sum(.data[[ord]], na.rm = TRUE),
+        air_temp    = mean(air_temp, na.rm = TRUE),
+        hour_of_day = unique(hour(hour)),  # 0–23
+        .groups     = "drop"
+      ) %>%
+      filter(is.finite(resp), is.finite(air_temp)) %>%
+      mutate(site = factor(site))
+  }
+  
+  # ---------- Build panels ----------
+  plots_all <- list()
+  vars_vec <- c("air_temp","hour_of_day")
+  
+  for (ord in orders) {
+    for (m in c("Jul","Aug")) {
+      df <- make_data_order_month(ord, m)
+      if (nrow(df) < 10) next
+      
+      mod_air <- fit_gam_air(df)
+      mod_tod <- fit_gam_tod(df)
+      
+      for (v in vars_vec) {
+        mod <- if (v == "air_temp") mod_air else mod_tod
+        plots_all[[length(plots_all) + 1]] <- plot_effect(mod, df, v, ord, ifelse(m=="Jul","July","August"))
+      }
+    }
+  }
+  
+  # ---------- Combine ----------
+  panel <- wrap_plots(plots_all, ncol = 4, guides = "collect") +
+    plot_annotation(
+      title = "GAM responses of hourly insect counts by order (Daytime only, All Sites)",
+      subtitle = "All sites • July–August 2025 (7 AM – 7 PM) • Columns within month: Air temperature (°F), Time of day.",
+      theme = theme(
+        plot.title = element_text(face = "bold", size = 16),
+        plot.subtitle = element_text(size = 12)
+      )
+    )
+  
+  print(panel)
+  
+  ggsave(
+    filename = "GAM_panel_orders_JulAug_daytime_tempF_tod_allSites.png",
+    plot = panel,
+    width = 20, height = 12, units = "in", dpi = 300, bg = "white"
+  )
+  
+#### GAM panel: Total insects • Air Temp (°F) + Time of Day ####
+# All sites • Jul–Aug 2025 (through Aug 20) • Daytime only (7 AM to 7 PM)
+# EXCLUDE entire DAYS whose daytime total (all sites combined) ≤ 2
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(lubridate)
+  library(mgcv)
+  library(patchwork)
+})
+
+# -------- helpers --------
+dt_coalesce <- function(df) {
+  cands <- intersect(names(df), c("datetime","datetime_rounded","datetime.x","datetime.y"))
+  if (!length(cands)) stop("No datetime-like column found.")
+  df %>% mutate(datetime_any = coalesce(!!!rlang::syms(cands)))
+}
+
+fit_gam_air <- function(df) {
+  k_air <- min(7, max(3, n_distinct(df$air_temp) - 1))
+  gam(resp ~ s(air_temp, k = k_air) + s(site, bs = "re"),
+      data = df, family = nb(), method = "REML", select = TRUE)
+}
+
+fit_gam_tod <- function(df) {
+  k_tod <- min(7, max(3, n_distinct(df$hour_of_day) - 1))
+  gam(resp ~ s(hour_of_day, k = k_tod) + s(site, bs = "re"),
+      data = df, family = nb(), method = "REML", select = TRUE)
+}
+
+plot_effect <- function(model_obj, df_ref, var, month_lab) {
+  stopifnot(var %in% c("air_temp","hour_of_day"))
+  ref_site <- levels(df_ref$site)[1]
+
+  grid <- tibble(
+    air_temp    = if (var == "air_temp")
+      seq(min(df_ref$air_temp, na.rm = TRUE),
+          max(df_ref$air_temp, na.rm = TRUE), length.out = 160)
+    else median(df_ref$air_temp, na.rm = TRUE),
+
+    hour_of_day = if (var == "hour_of_day")
+      seq(min(df_ref$hour_of_day, na.rm = TRUE),
+          max(df_ref$hour_of_day, na.rm = TRUE), length.out = 160)
+    else median(df_ref$hour_of_day, na.rm = TRUE),
+
+    site = factor(ref_site, levels = levels(df_ref$site))
+  )
+
+  pr <- predict(model_obj, newdata = grid, type = "link", se.fit = TRUE)
+
+  df_plot <- grid %>%
+    mutate(
+      fit = exp(pr$fit),
+      lo  = exp(pr$fit - 1.96 * pr$se.fit),
+      hi  = exp(pr$fit + 1.96 * pr$se.fit),
+      x   = .data[[var]]
+    )
+
+  pretty_var <- recode(var,
+                       air_temp    = "Air temperature (°F)",
+                       hour_of_day = "Hour of day")
+
+  ggplot(df_plot, aes(x = x, y = fit)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.18, fill = "grey70") +
+    geom_line(linewidth = 1, color = "black") +
+    labs(
+      title = month_lab,
+      subtitle = pretty_var,
+      x = pretty_var,
+      y = "Predicted total insects per hour"
+    ) +
+    theme_minimal(base_size = 11) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+}
+
+# -------- data prep --------
+stopifnot(exists("combined_with_weather"))
+
+# Ensure total_abundance exists
+if (!"total_abundance" %in% names(combined_with_weather)) {
+  insect_cols <- intersect(
+    c("Diptera","Hymenoptera","Lepidoptera","Coleoptera"),
+    names(combined_with_weather)
+  )
+  stopifnot(length(insect_cols) > 0)
+  combined_with_weather <- combined_with_weather %>%
+    mutate(total_abundance = rowSums(across(all_of(insect_cols)), na.rm = TRUE))
+}
+
+# Build hourly data across all sites
+cw_hr0 <- combined_with_weather %>%
+  dt_coalesce() %>%
+  mutate(
+    datetime = as_datetime(datetime_any),
+    date     = as_date(datetime),
+    month    = month(date, label = TRUE, abbr = TRUE),
+    hour_num = hour(datetime),
+    hour     = floor_date(datetime, "hour")
+  ) %>%
+  filter(month %in% c("Jul","Aug")) %>%
+  filter(!(month == "Aug" & date > ymd("2025-08-20"))) %>%
+  filter(hour_num >= 7 & hour_num < 19) %>%  # daytime only
+  group_by(site, date, hour) %>%
+  summarise(
+    resp        = sum(total_abundance, na.rm = TRUE),
+    air_temp    = mean(air_temp, na.rm = TRUE),
+    hour_of_day = unique(hour(hour)),
+    month       = unique(month),
+    .groups = "drop"
+  )
+
+# Compute daytime total per DAY across all sites, then drop entire days with total ≤ 2
+day_totals <- cw_hr0 %>%
+  group_by(date) %>%
+  summarise(day_total = sum(resp, na.rm = TRUE), .groups = "drop")
+
+keep_dates <- day_totals %>%
+  filter(day_total > 2) %>%
+  pull(date)
+
+cw_hr <- cw_hr0 %>%
+  filter(date %in% keep_dates) %>%
+  filter(is.finite(resp), is.finite(air_temp)) %>%
+  mutate(site = factor(site))
+
+# Split by month
+df_jul <- cw_hr %>% filter(month == "Jul")
+df_aug <- cw_hr %>% filter(month == "Aug")
+
+# -------- fit models --------
+mod_air_jul <- fit_gam_air(df_jul)
+mod_tod_jul <- fit_gam_tod(df_jul)
+
+mod_air_aug <- fit_gam_air(df_aug)
+mod_tod_aug <- fit_gam_tod(df_aug)
+
+# -------- plots --------
+plots_all <- list(
+  plot_effect(mod_air_jul, df_jul, "air_temp", "July"),
+  plot_effect(mod_tod_jul, df_jul, "hour_of_day", "July"),
+  plot_effect(mod_air_aug, df_aug, "air_temp", "August"),
+  plot_effect(mod_tod_aug, df_aug, "hour_of_day", "August")
+)
+
+panel <- wrap_plots(plots_all, ncol = 4) +
+  plot_annotation(
+    title = "GAM responses of total insect counts (daytime only, days with total > 2 kept)",
+    subtitle = "All sites • Jul–Aug 2025 (7 AM to 7 PM) • Entire days with daytime total ≤ 2 are excluded",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold"),
+      plot.subtitle = element_text(size = 12)
+    )
+  )
+
+print(panel)
+
+ggsave(
+  filename = "GAM_totalInsects_JulAug_daytime_dayFilter_gt2.png",
+  plot = panel,
+  width = 16, height = 8, units = "in", dpi = 300, bg = "white"
+)
+
+
+#### Diptera GAM panel: Diptera only • Air temperature (°F) + Time of Day ####
+# All sites • Jul–Aug 2025 (through Aug 20) • Daytime only (7 AM to 7 PM)
+# Panels (2 x 2): Jul Air • Aug Air • Jul Time • Aug Time
+
+suppressPackageStartupMessages({
+  library(tidyverse)
+  library(lubridate)
+  library(mgcv)
+  library(patchwork)
+})
+
+# ---------- helpers ----------
+dt_coalesce <- function(df) {
+  cands <- intersect(names(df), c("datetime","datetime_rounded","datetime.x","datetime.y"))
+  if (!length(cands)) stop("No datetime-like column found.")
+  df %>% mutate(datetime_any = coalesce(!!!rlang::syms(cands)))
+}
+
+fit_gam_air <- function(df) {
+  k_air <- min(7, max(3, n_distinct(df$air_temp) - 1))
+  gam(resp ~ s(air_temp, k = k_air) + s(site, bs = "re"),
+      data = df, family = nb(), method = "REML", select = TRUE)
+}
+
+fit_gam_tod <- function(df) {
+  k_tod <- min(7, max(3, n_distinct(df$hour_of_day) - 1))
+  gam(resp ~ s(hour_of_day, k = k_tod) + s(site, bs = "re"),
+      data = df, family = nb(), method = "REML", select = TRUE)
+}
+
+plot_effect <- function(model_obj, df_ref, var, panel_title) {
+  stopifnot(var %in% c("air_temp","hour_of_day"))
+  ref_site <- levels(df_ref$site)[1]
+  
+  grid <- tibble(
+    air_temp    = if (var == "air_temp")
+      seq(min(df_ref$air_temp, na.rm = TRUE),
+          max(df_ref$air_temp, na.rm = TRUE), length.out = 160)
+    else median(df_ref$air_temp, na.rm = TRUE),
+    
+    hour_of_day = if (var == "hour_of_day")
+      seq(min(df_ref$hour_of_day, na.rm = TRUE),
+          max(df_ref$hour_of_day, na.rm = TRUE), length.out = 160)
+    else median(df_ref$hour_of_day, na.rm = TRUE),
+    
+    site = factor(ref_site, levels = levels(df_ref$site))
+  )
+  
+  pr <- predict(model_obj, newdata = grid, type = "link", se.fit = TRUE)
+  
+  df_plot <- grid %>%
+    mutate(
+      fit = exp(pr$fit),
+      lo  = exp(pr$fit - 1.96 * pr$se.fit),
+      hi  = exp(pr$fit + 1.96 * pr$se.fit),
+      x   = .data[[var]]
+    )
+  
+  pretty_var <- recode(var,
+                       air_temp    = "Air temperature (°F)",
+                       hour_of_day = "Hour of day")
+  
+  ggplot(df_plot, aes(x = x, y = fit)) +
+    geom_ribbon(aes(ymin = lo, ymax = hi), alpha = 0.18, fill = "grey75") +
+    geom_line(linewidth = 1, color = "black") +
+    labs(
+      title = panel_title,
+      x = pretty_var,
+      y = "Predicted Diptera per hour"
+    ) +
+    theme_minimal(base_size = 12) +
+    theme(
+      plot.title = element_text(face = "bold"),
+      panel.grid.minor = element_blank()
+    )
+}
+
+# ---------- data prep ----------
+stopifnot(exists("combined_with_weather"))
+if (!"Diptera" %in% names(combined_with_weather)) stop("Diptera column not found.")
+
+cw_hr <- combined_with_weather %>%
+  dt_coalesce() %>%
+  mutate(
+    datetime = as_datetime(datetime_any),
+    date     = as_date(datetime),
+    month    = month(date, label = TRUE, abbr = TRUE),
+    hour_num = hour(datetime),
+    hour     = floor_date(datetime, "hour")
+  ) %>%
+  filter(month %in% c("Jul","Aug")) %>%
+  filter(!(month == "Aug" & date > ymd("2025-08-20"))) %>%
+  filter(hour_num >= 7 & hour_num < 19)   # daytime only
+
+make_data_month <- function(month_lab) {
+  cw_hr %>%
+    filter(month == month_lab) %>%
+    group_by(site, hour) %>%
+    summarise(
+      resp        = sum(Diptera, na.rm = TRUE),
+      air_temp    = mean(air_temp, na.rm = TRUE),
+      hour_of_day = unique(hour(hour)),  # 0–23
+      .groups     = "drop"
+    ) %>%
+    filter(is.finite(resp), is.finite(air_temp)) %>%
+    mutate(site = factor(site))
+}
+
+df_jul <- make_data_month("Jul")
+df_aug <- make_data_month("Aug")
+
+# ---------- models ----------
+mod_air_jul <- fit_gam_air(df_jul)
+mod_tod_jul <- fit_gam_tod(df_jul)
+mod_air_aug <- fit_gam_air(df_aug)
+mod_tod_aug <- fit_gam_tod(df_aug)
+
+# ---------- panels (2 x 2) ----------
+p_jul_air <- plot_effect(mod_air_jul, df_jul, "air_temp", "July • Air temperature")
+p_aug_air <- plot_effect(mod_air_aug, df_aug, "air_temp", "August • Air temperature")
+p_jul_tod <- plot_effect(mod_tod_jul, df_jul, "hour_of_day", "July • Time of day")
+p_aug_tod <- plot_effect(mod_tod_aug, df_aug, "hour_of_day", "August • Time of day")
+
+panel <- (p_jul_air | p_aug_air) /
+  (p_jul_tod | p_aug_tod) +
+  plot_annotation(
+    title = "GAM responses for Diptera (daytime only, all sites)",
+    subtitle = "July and August 2025 • 7 AM to 7 PM • Through Aug 20",
+    theme = theme(
+      plot.title = element_text(size = 16, face = "bold"),
+      plot.subtitle = element_text(size = 12)
+    )
+  )
+
+print(panel)
+
+ggsave(
+  filename = "GAM_Diptera_JulAug_daytime_air_temp_vs_time.png",
+  plot = panel,
+  width = 14, height = 10, units = "in", dpi = 300, bg = "white"
+)
