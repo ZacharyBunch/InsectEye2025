@@ -1674,7 +1674,7 @@ ggplot() +
     geom_text(data = days_tbl_lab,
               aes(x = label_x, y = -0.06 * ymax, label = label),
               size = 3, vjust = 1) +
-    coord_cartesian(ylim = c(-0.08 * ymax, 1.05 * ymax), clip = "off") +
+    coord_cartesian(ylim = c(-1, 20), clip = "off") +
     scale_x_datetime(expand = expansion(mult = c(0, 0))) +
     scale_color_manual(values = pal, name = "Weather (scaled)") +
     labs(
